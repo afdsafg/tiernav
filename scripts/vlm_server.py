@@ -142,22 +142,34 @@ def load_models() -> None:
         )
         # Ensure chat template is loaded (Qwen2.5-VL checkpoints ship
         # chat_template.jinja separately; AutoProcessor may not auto-attach it).
-        try:
-            tok = getattr(processor, "tokenizer", None)
-            if tok is not None and not getattr(tok, "chat_template", None):
+        tok = getattr(processor, "tokenizer", None)
+        if tok is not None:
+            # Try chat_template attribute first
+            if not getattr(tok, "chat_template", None):
                 jinja_path = os.path.join(MODEL_PATH, "chat_template.jinja")
                 if os.path.exists(jinja_path):
                     with open(jinja_path, "r", encoding="utf-8") as fh:
                         tok.chat_template = fh.read()
                     logger.info("Loaded chat_template.jinja into tokenizer.")
-                else:
-                    logger.warning("chat_template.jinja not found in %s", MODEL_PATH)
-        except Exception as e:
-            logger.warning("Failed to load chat_template.jinja: %s", e)
+            # If still missing, set a minimal fallback
+            if not getattr(tok, "chat_template", None):
+                logger.warning(
+                    "No chat_template available; setting minimal default."
+                )
+                tok.chat_template = (
+                    "{% for message in messages %}"
+                    "{% if message['role'] == 'user' %}"
+                    "<|im_start|>user\n{{ message['content'] }}<|im_end|>\n"
+                    "<|im_start|>assistant\n"
+                    "{% elif message['role'] == 'assistant' %}"
+                    "{{ message['content'] }}<|im_end|>\n"
+                    "{% endif %}{% endfor %}"
+                )
         logger.info(
-            "Model loaded in %.1fs. device=%s",
+            "Model loaded in %.1fs. device=%s chat_template=%s",
             time.time() - t0,
             next(model.parameters()).device,
+            "yes" if (tok and getattr(tok, "chat_template", None)) else "no",
         )
     except Exception as e:
         load_error = f"{type(e).__name__}: {e}"
@@ -273,7 +285,10 @@ def run_generate(
     req: ChatCompletionRequest, chat_messages, images
 ) -> dict:
     """Blocking: run model.generate and return an OpenAI-style response dict."""
-    text = processor.apply_chat_template(
+    # Use tokenizer.apply_chat_template (the processor may not carry the
+    # chat template from the checkpoint's chat_template.jinja).
+    tok = getattr(processor, "tokenizer", processor)
+    text = tok.apply_chat_template(
         chat_messages, tokenize=False, add_generation_prompt=True
     )
     proc_kwargs = dict(
