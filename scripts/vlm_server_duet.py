@@ -68,8 +68,8 @@ _parser.add_argument(
     help="VisionZip contextual tokens (cluster-aggregated).",
 )
 _parser.add_argument(
-    "--pdrop-enabled", action="store_true", default=True,
-    help="Enable PyramidDrop stage-2 compression.",
+    "--pdrop-enabled", action="store_true", default=False,
+    help="Enable PyramidDrop stage-2 compression (disabled by default due to token count mismatch with custom transformers 4.57.1).",
 )
 _parser.add_argument(
     "--pdrop-layers", type=int, nargs="+", default=[14, 21],
