@@ -287,15 +287,19 @@ def run_generate(
     """Blocking: run model.generate and return an OpenAI-style response dict."""
     # Use tokenizer.apply_chat_template (the processor may not carry the
     # chat template from the checkpoint's chat_template.jinja).
+    # TARGET_IMAGE_SIZE: all images are resized to this fixed resolution
+    # before passing to the processor. Required because Qwen2.5-VL with
+    # use_compression=True routes images through DINOv3ViTImageProcessor
+    # which uses torch.stack and requires equal-sized tensors.
+    TARGET_IMAGE_SIZE: tuple[int, int] = (720, 640)
+
     tok = getattr(processor, "tokenizer", processor)
     text = tok.apply_chat_template(
         chat_messages, tokenize=False, add_generation_prompt=True
     )
-    # Resize all images to the same size (required by processor padding).
-    if images and len(images) > 1:
-        max_w = max(img.width for img in images)
-        max_h = max(img.height for img in images)
-        images = [img.resize((max_w, max_h), Image.LANCZOS) for img in images]
+    # Resize all images to a fixed resolution to avoid stack errors
+    if images:
+        images = [img.resize(TARGET_IMAGE_SIZE, Image.LANCZOS) for img in images]
 
     proc_kwargs = dict(
         text=[text],
