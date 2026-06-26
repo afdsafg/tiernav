@@ -34,6 +34,59 @@ from src.utils import get_pts_angle_aeqa
 DEFAULT_SPLITS = ((0.0, 0.5), (0.5, 1.0))
 
 
+# Method variant configs for ablation experiments (experiment_plan §5.3, §6.3)
+# Each maps a method name to the method_config dict passed to run_episode_two_tier.
+METHOD_CONFIGS = {
+    # Dev subset variants (Stage 1)
+    "D0_backend_only": {
+        "use_notebook": False, "use_scene_graph": False,
+        "use_active_query": False, "use_rejected_tracking": False,
+    },
+    "D1_react_loop": {
+        "use_notebook": True, "use_scene_graph": False,
+        "use_active_query": False, "use_rejected_tracking": False,
+    },
+    "D2_room_graph": {
+        "use_notebook": True, "use_scene_graph": True,
+        "use_active_query": False, "use_rejected_tracking": False,
+    },
+    "D3_active_query": {
+        "use_notebook": True, "use_scene_graph": True,
+        "use_active_query": True, "use_rejected_tracking": False,
+    },
+    "D4_rejected_tracking": {
+        "use_notebook": True, "use_scene_graph": True,
+        "use_active_query": True, "use_rejected_tracking": True,
+    },
+    # Full method (Stage 2)
+    "ours_full": {
+        "use_notebook": True, "use_scene_graph": True,
+        "use_active_query": True, "use_rejected_tracking": True,
+    },
+    # Ablations (Stage 2 §6.3)
+    "A1_wo_notebook": {
+        "use_notebook": False, "use_scene_graph": True,
+        "use_active_query": True, "use_rejected_tracking": True,
+    },
+    "A3_wo_room_seg": {
+        "use_notebook": True, "use_scene_graph": False,
+        "use_active_query": True, "use_rejected_tracking": True,
+    },
+    "A4_wo_graph": {
+        "use_notebook": True, "use_scene_graph": False,
+        "use_active_query": True, "use_rejected_tracking": True,
+    },
+    "A5_wo_active_query": {
+        "use_notebook": True, "use_scene_graph": True,
+        "use_active_query": False, "use_rejected_tracking": True,
+    },
+    "A6_wo_rejected": {
+        "use_notebook": True, "use_scene_graph": True,
+        "use_active_query": True, "use_rejected_tracking": False,
+    },
+}
+
+
 class ElapsedTimeFormatter(logging.Formatter):
     def __init__(self, fmt=None, datefmt=None):
         super().__init__(fmt, datefmt)
@@ -129,6 +182,9 @@ def main(
     questions_limit: int = 41,
     max_planner_rounds: int = 20,
     aggregate_results: bool = True,
+    method_name: str = "ours_full",
+    method_config: Optional[dict] = None,
+    run_logger: Optional["RunLogger"] = None,
 ):
     split_name = f"{start_ratio:.2f}_{end_ratio:.2f}"
     _setup_logging(cfg.output_dir, start_ratio, end_ratio)
@@ -137,6 +193,7 @@ def main(
     logging.info("Question path: %s", cfg.questions_list_path)
     logging.info("Output dir: %s", cfg.output_dir)
     logging.info("Split: %.2f-%.2f", start_ratio, end_ratio)
+    logging.info("Method: %s config=%s", method_name, method_config or {})
 
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)
@@ -211,6 +268,8 @@ def main(
                 max_total_steps=cfg.get("two_tier_max_steps", cfg.num_step),
                 start_pts=pts,
                 start_angle=angle,
+                run_logger=run_logger,
+                method_config=method_config,
             )
         except Exception as e:
             logging.exception("Episode %s failed with error: %s", question_id, e)
@@ -348,20 +407,46 @@ def _worker_entry(
     max_planner_rounds: int,
     exp_suffix: str,
     questions_path: Optional[str],
+    method_name: str = "ours_full",
+    method_config: Optional[dict] = None,
 ) -> None:
     cfg = _load_cfg(cfg_file, exp_suffix=exp_suffix, questions_path=questions_path)
-    main(
-        cfg,
-        start_ratio=start_ratio,
-        end_ratio=end_ratio,
-        questions_limit=questions_limit,
-        max_planner_rounds=max_planner_rounds,
-        aggregate_results=False,
+    # Build a RunLogger per worker (writes to the run's output_dir)
+    from src.run_logger import RunLogger
+    import datetime
+    run_id = f"{method_name}_AEQA_{datetime.datetime.now().strftime('%Y-%m-%d')}_{start_ratio:.2f}_{end_ratio:.2f}"
+    rl = RunLogger(
+        output_dir=cfg.output_dir,
+        run_id=run_id,
+        method_name=method_name,
+        dataset="AEQA-41",
+        model=os.environ.get("MODEL_NAME", "qwen2.5vl-3b-local"),
+        seed=cfg.seed,
+        config_path=cfg_file,
+        use_notebook=method_config.get("use_notebook", True) if method_config else True,
+        use_scene_graph=method_config.get("use_scene_graph", True) if method_config else True,
+        use_active_query=method_config.get("use_active_query", True) if method_config else True,
+        use_rejected_tracking=method_config.get("use_rejected_tracking", True) if method_config else True,
     )
+    try:
+        main(
+            cfg,
+            start_ratio=start_ratio,
+            end_ratio=end_ratio,
+            questions_limit=questions_limit,
+            max_planner_rounds=max_planner_rounds,
+            aggregate_results=False,
+            method_name=method_name,
+            method_config=method_config,
+            run_logger=rl,
+        )
+    finally:
+        rl.close()
 
 
 def _run_parallel_splits(args) -> int:
     splits = DEFAULT_SPLITS
+    method_config = METHOD_CONFIGS.get(args.method, METHOD_CONFIGS["ours_full"])
     processes = []
     for start_ratio, end_ratio in splits:
         process = mp.Process(
@@ -375,6 +460,8 @@ def _run_parallel_splits(args) -> int:
                 args.max_planner_rounds,
                 args.exp_suffix,
                 args.questions_path,
+                args.method,
+                method_config,
             ),
         )
         process.start()
@@ -445,11 +532,22 @@ def parse_args():
         type=str,
         help="Suffix appended to cfg.exp_name for output_dir.",
     )
+    parser.add_argument(
+        "--method",
+        default="ours_full",
+        type=str,
+        choices=list(METHOD_CONFIGS.keys()),
+        help="Method variant. Controls method_config flags for ablation. "
+             "Options: D0_backend_only, D1_react_loop, D2_room_graph, D3_active_query, "
+             "D4_rejected_tracking, ours_full, A1_wo_notebook, A3_wo_room_seg, "
+             "A4_wo_graph, A5_wo_active_query, A6_wo_rejected.",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
+    method_config = METHOD_CONFIGS.get(args.method, METHOD_CONFIGS["ours_full"])
     single_split = args.single_split or args.start_ratio is not None or args.end_ratio is not None
     if single_split:
         start_ratio = 0.0 if args.start_ratio is None else args.start_ratio
@@ -459,13 +557,36 @@ if __name__ == "__main__":
             exp_suffix=args.exp_suffix,
             questions_path=args.questions_path,
         )
-        main(
-            cfg,
-            start_ratio=start_ratio,
-            end_ratio=end_ratio,
-            questions_limit=args.questions_limit,
-            max_planner_rounds=args.max_planner_rounds,
+        # Build RunLogger for single-split runs
+        from src.run_logger import RunLogger
+        import datetime
+        run_id = f"{args.method}_AEQA_{datetime.datetime.now().strftime('%Y-%m-%d')}_{start_ratio:.2f}_{end_ratio:.2f}"
+        rl = RunLogger(
+            output_dir=cfg.output_dir,
+            run_id=run_id,
+            method_name=args.method,
+            dataset="AEQA-41",
+            model=os.environ.get("MODEL_NAME", "qwen2.5vl-3b-local"),
+            seed=cfg.seed,
+            config_path=args.cfg_file,
+            use_notebook=method_config.get("use_notebook", True),
+            use_scene_graph=method_config.get("use_scene_graph", True),
+            use_active_query=method_config.get("use_active_query", True),
+            use_rejected_tracking=method_config.get("use_rejected_tracking", True),
         )
+        try:
+            main(
+                cfg,
+                start_ratio=start_ratio,
+                end_ratio=end_ratio,
+                questions_limit=args.questions_limit,
+                max_planner_rounds=args.max_planner_rounds,
+                method_name=args.method,
+                method_config=method_config,
+                run_logger=rl,
+            )
+        finally:
+            rl.close()
     else:
         mp.set_start_method("spawn", force=True)
         raise SystemExit(_run_parallel_splits(args))

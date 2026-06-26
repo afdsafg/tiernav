@@ -26,6 +26,7 @@ from src.agent_executor import Executor
 from src.agent_memory import MemoryStore
 from src.agent_notebook import EvidenceNotebook
 from src.agent_planner import Planner, PlannerAction, PLANNER_SYSTEM_PROMPT
+from src.scene_graph_memory import SceneGraphMemory
 from src.agent_tools import (
     silent_perception_step,
     build_planner_topdown_map_b64,
@@ -1098,18 +1099,37 @@ def run_episode_two_tier(
     max_total_steps: int = 50,
     start_pts: Optional[np.ndarray] = None,
     start_angle: float = 0.0,
+    run_logger=None,
+    method_config: Optional[dict] = None,
 ) -> Dict:
     """Two-tier Planner-Executor episode loop.
 
     Returns: dict with keys:
         scene_id, question_id, question, answer, success, steps_taken,
         rounds_used, error
+
+    Args:
+        run_logger: optional RunLogger for Stage 0 trace recording. If provided,
+            decision/memory_query/trajectory_evidence traces are written.
+        method_config: optional dict of method component flags for ablation:
+            use_notebook (bool, default True) — structured notebook + injection
+            use_scene_graph (bool, default True) — room-view-object graph
+            use_active_query (bool, default True) — active memory query before planner
+            use_rejected_tracking (bool, default True) — rejected region tracking
+            choose_every_step (bool, default False) — query VLM every step (A2 ablation)
     """
     import habitat_sim
     from src.scene_aeqa import Scene
     from src.habitat import pos_normal_to_habitat
     from src.tsdf_planner import TSDFPlanner
     from src.const import QWEN_PLANNER_API_KEY, QWEN_PLANNER_BASE_URL
+
+    # Method config (ablation flags)
+    mc = method_config or {}
+    use_notebook = mc.get("use_notebook", True)
+    use_scene_graph = mc.get("use_scene_graph", True)
+    use_active_query = mc.get("use_active_query", True)
+    use_rejected_tracking = mc.get("use_rejected_tracking", True)
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -1130,8 +1150,12 @@ def run_episode_two_tier(
     scene = None
     tsdf_planner = None
     notebook = EvidenceNotebook()
+    scene_graph = SceneGraphMemory() if use_scene_graph else None
     planner = Planner(api_key=QWEN_PLANNER_API_KEY, base_url=QWEN_PLANNER_BASE_URL)
     executor = None
+
+    if run_logger is not None:
+        run_logger.start_episode(episode_id=question_id, question_or_goal=question)
 
     try:
         from src.agent_tools import silent_perception_step
@@ -1207,6 +1231,24 @@ def run_episode_two_tier(
         evidence = executor.explore_panorama()
         pts, angle = executor._pts, executor._angle
         notebook.update_from_evidence(evidence, step=silent_perception_step._step_counter)
+
+        # Sync scene graph from room segmentation + record initial evidence
+        if scene_graph is not None:
+            scene_graph.sync_rooms_from_tsdf(tsdf_planner)
+            scene_graph.add_evidence(
+                decision_id=0, action="explore_panorama", outcome=evidence.outcome,
+                room_id=evidence.room_id, key_frame_ids=evidence.key_frames,
+                objects_nearby=evidence.objects_nearby, progress=evidence.progress,
+            )
+            scene_graph.increment_room_visit(evidence.room_id)
+        if run_logger is not None:
+            run_logger.log_trajectory_evidence(
+                episode_id=question_id, decision_id=0, action="explore_panorama",
+                target="initial", outcome=evidence.outcome, room_id=evidence.room_id,
+                objects_nearby=evidence.objects_nearby, key_frame_ids=evidence.key_frames,
+                steps_taken=int(getattr(silent_perception_step, "_step_counter", 0)),
+                progress=evidence.progress,
+            )
 
         # ── Helper builders ──────────────────────────────────────────
 
@@ -1407,6 +1449,46 @@ def run_episode_two_tier(
             current_views = _build_current_view_images(scene, pts, angle, current_step_id)
             progress = _build_progress(round_num, current_views)
             actions = _build_actions()
+
+            # Active memory query (Contribution 3): query scene graph before planning
+            memory_summary_dict: dict = {}
+            if use_active_query and scene_graph is not None and len(scene_graph.rooms) > 0:
+                query_text = question
+                mq_result = scene_graph.query_scene_graph(
+                    query_text, filters={"status": ["partially_explored", "searched"]},
+                )
+                if mq_result["candidate_rooms"] or mq_result["candidate_objects"]:
+                    # Inject memory summary into scene analysis
+                    mem_lines = ["## Memory Query Result"]
+                    if mq_result["candidate_rooms"]:
+                        mem_lines.append(f"Candidate rooms from memory: {mq_result['candidate_rooms']}")
+                    if mq_result["candidate_objects"]:
+                        obj_cats = []
+                        for oid in mq_result["candidate_objects"][:5]:
+                            obj = scene_graph.objects.get(oid)
+                            if obj:
+                                obj_cats.append(f"{obj.category}(room {obj.room_id}, conf {obj.confidence:.2f})")
+                        mem_lines.append(f"Remembered objects: {', '.join(obj_cats)}")
+                    if mq_result["returned_evidence_ids"]:
+                        mem_lines.append(f"Past evidence: {mq_result['returned_evidence_ids'][:5]}")
+                    scene_analysis = scene_analysis + "\n" + "\n".join(mem_lines)
+                    memory_summary_dict = {
+                        "candidate_rooms": mq_result["candidate_rooms"],
+                        "candidate_objects": mq_result["candidate_objects"],
+                        "returned_evidence_ids": mq_result["returned_evidence_ids"],
+                    }
+                if run_logger is not None and (mq_result["candidate_rooms"] or mq_result["candidate_objects"]):
+                    run_logger.log_memory_query(
+                        episode_id=question_id, decision_id=rounds_used,
+                        query_id=mq_result["query_id"], query_text=query_text,
+                        filters={"status": ["partially_explored", "searched"]},
+                        candidate_rooms=mq_result["candidate_rooms"],
+                        candidate_views=mq_result["candidate_views"],
+                        candidate_objects=mq_result["candidate_objects"],
+                        returned_evidence_ids=mq_result["returned_evidence_ids"],
+                        query_latency_sec=mq_result["query_latency_sec"],
+                    )
+
             prompt_text = planner.build_prompt(
                 question=question,
                 history=history,
@@ -1421,6 +1503,10 @@ def run_episode_two_tier(
                 "Round %d prompt saved: notebook_entries=%d prompt=%s",
                 rounds_used, len(notebook.entries), prompt_path,
             )
+
+            # Inject structured notebook into history if enabled
+            if use_notebook and notebook.structured.hypotheses:
+                history = history + "\n" + notebook.structured.get_injection_text()
 
             topdown_b64 = build_planner_topdown_map_b64(
                 memory_store, tsdf_planner, pts, angle
@@ -1444,6 +1530,9 @@ def run_episode_two_tier(
                     fh.write(base64.b64decode(topdown_b64))
             else:
                 logger.warning("Round %d: planner topdown map unavailable", rounds_used)
+
+            # Capture notebook state before decision for trace
+            notebook_before = notebook.to_dict() if run_logger is not None else None
 
             # Planner decides
             action = planner.decide(
@@ -1502,6 +1591,25 @@ def run_episode_two_tier(
                 logger.info("Guard: replacing invalid object navigation target: %s", action.object_name)
                 action = _first_available_action(prefer_non_panorama=True)
 
+            # Record decision trace (Stage 0 logging)
+            if run_logger is not None:
+                current_room_log = (
+                    tsdf_planner.get_room_id_at(tsdf_planner.habitat2voxel(pts)[:2])
+                    if pts is not None and hasattr(tsdf_planner, "get_room_id_at") else -1
+                )
+                run_logger.log_decision(
+                    episode_id=question_id, decision_id=rounds_used,
+                    current_room=current_room_log,
+                    notebook_before=notebook_before,
+                    available_actions=["explore_panorama", "navigate_to_object", "explore_seed", "explore_frontier", "submit_answer"],
+                    memory_summary=memory_summary_dict,
+                    planner_reason=action.reason or "",
+                    selected_action=action.action_type,
+                    target=action.snapshot_id or action.object_name or action.seed_id or action.frontier_id or "",
+                    expected_evidence=action.expected or "",
+                    vlm_calls_this_decision=1,
+                )
+
             # Check submit_answer
             if action.action_type == "submit_answer":
                 result["answer"] = action.answer or ""
@@ -1509,6 +1617,16 @@ def run_episode_two_tier(
                 result["steps_taken"] = silent_perception_step._step_counter
                 result["rounds_used"] = rounds_used
                 logger.info(f"Answer submitted at round {rounds_used}: {result['answer']}")
+                if run_logger is not None:
+                    if action.snapshot_id:
+                        run_logger.register_evidence_id(action.snapshot_id)
+                    if scene_graph is not None:
+                        run_logger.save_graph(question_id, scene_graph.to_dict())
+                    run_logger.finalize_episode(
+                        episode_id=question_id, success=True,
+                        answer=result["answer"], evidence_ids=[action.snapshot_id] if action.snapshot_id else None,
+                        num_steps=int(result["steps_taken"]),
+                    )
                 return result
 
             # Executor executes
@@ -1517,6 +1635,32 @@ def run_episode_two_tier(
             action_history.append(action.action_type)
             current_step = silent_perception_step._step_counter
             notebook.update_from_evidence(evidence, step=current_step)
+
+            # Sync scene graph + record trajectory evidence (Stage 0 + Contribution 2)
+            if scene_graph is not None:
+                scene_graph.sync_rooms_from_tsdf(tsdf_planner)
+                scene_graph.add_evidence(
+                    decision_id=rounds_used, action=action.action_type,
+                    outcome=evidence.outcome, room_id=evidence.room_id,
+                    key_frame_ids=evidence.key_frames,
+                    objects_nearby=evidence.objects_nearby, progress=evidence.progress,
+                )
+                if evidence.room_id >= 0:
+                    scene_graph.increment_room_visit(evidence.room_id)
+                # Rejected-region tracking: mark room rejected if detection failed there
+                if use_rejected_tracking and evidence.outcome == "detection_failed" and evidence.room_id >= 0:
+                    scene_graph.mark_rejected(evidence.room_id, f"GD failed for {evidence.subgoal}")
+                    notebook.structured.mark_rejected(str(evidence.room_id), f"GD failed for {evidence.subgoal}")
+            if run_logger is not None:
+                run_logger.log_trajectory_evidence(
+                    episode_id=question_id, decision_id=rounds_used,
+                    action=action.action_type,
+                    target=action.object_name or action.seed_id or action.frontier_id or "",
+                    outcome=evidence.outcome, room_id=evidence.room_id,
+                    objects_nearby=evidence.objects_nearby, key_frame_ids=evidence.key_frames,
+                    success=(evidence.outcome in {"arrived_near_target", "object_found", "panorama_complete"}),
+                    steps_taken=int(current_step), progress=evidence.progress,
+                )
 
             # Loop detection: force switch if entity exhausted
             exhausted_id = (
@@ -1546,6 +1690,16 @@ def run_episode_two_tier(
         result["success"] = "unanswerable" not in result["answer"].lower()
         result["steps_taken"] = silent_perception_step._step_counter
         result["rounds_used"] = max_planner_rounds
+        if run_logger is not None:
+            failure_type = "premature_submit" if not result["success"] else "budget_exhausted_answered"
+            if scene_graph is not None:
+                run_logger.save_graph(question_id, scene_graph.to_dict())
+            run_logger.finalize_episode(
+                episode_id=question_id, success=result["success"],
+                answer=result["answer"], num_steps=int(result["steps_taken"]),
+                failure_type=failure_type if not result["success"] else "",
+                failure_reason="step budget exhausted" if not result["success"] else "",
+            )
         return result
 
     except Exception as e:
@@ -1553,6 +1707,18 @@ def run_episode_two_tier(
         import traceback
         traceback.print_exc()
         result["error"] = str(e)
+        if run_logger is not None:
+            if scene_graph is not None:
+                try:
+                    run_logger.save_graph(question_id, scene_graph.to_dict())
+                except Exception:
+                    pass
+            run_logger.finalize_episode(
+                episode_id=question_id, success=False,
+                answer=result.get("answer", ""), num_steps=0,
+                failure_type="planner_error",
+                failure_reason=str(e)[:200],
+            )
         return result
 
     finally:
