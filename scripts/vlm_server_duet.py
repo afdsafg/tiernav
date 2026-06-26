@@ -287,7 +287,13 @@ async def chat_completions(req: ChatCompletionRequest):
     try:
         chat_messages, images = convert_messages(req.messages)
         t0 = time.time()
-        prompt_chars = len(json.dumps(chat_messages))
+        # Compute prompt_chars from text content only (images make json.dumps fail)
+        prompt_chars = sum(
+            len(str(m.get("content", "")))
+            if isinstance(m.get("content"), str)
+            else len(json.dumps(m.get("content", []), default=str))
+            for m in chat_messages
+        )
         logger.info(
             "request: messages=%d images=%d prompt_chars=%d max_tokens=%d temp=%.1f",
             len(req.messages), len(images), prompt_chars,
