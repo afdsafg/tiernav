@@ -291,6 +291,12 @@ def run_generate(
     text = tok.apply_chat_template(
         chat_messages, tokenize=False, add_generation_prompt=True
     )
+    # Resize all images to the same size (required by processor padding).
+    if images and len(images) > 1:
+        max_w = max(img.width for img in images)
+        max_h = max(img.height for img in images)
+        images = [img.resize((max_w, max_h), Image.LANCZOS) for img in images]
+
     proc_kwargs = dict(
         text=[text],
         padding=True,
