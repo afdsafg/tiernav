@@ -140,6 +140,20 @@ def load_models() -> None:
             min_pixels=MIN_PIXELS,
             max_pixels=MAX_PIXELS,
         )
+        # Ensure chat template is loaded (Qwen2.5-VL checkpoints ship
+        # chat_template.jinja separately; AutoProcessor may not auto-attach it).
+        try:
+            tok = getattr(processor, "tokenizer", None)
+            if tok is not None and not getattr(tok, "chat_template", None):
+                jinja_path = os.path.join(MODEL_PATH, "chat_template.jinja")
+                if os.path.exists(jinja_path):
+                    with open(jinja_path, "r", encoding="utf-8") as fh:
+                        tok.chat_template = fh.read()
+                    logger.info("Loaded chat_template.jinja into tokenizer.")
+                else:
+                    logger.warning("chat_template.jinja not found in %s", MODEL_PATH)
+        except Exception as e:
+            logger.warning("Failed to load chat_template.jinja: %s", e)
         logger.info(
             "Model loaded in %.1fs. device=%s",
             time.time() - t0,
