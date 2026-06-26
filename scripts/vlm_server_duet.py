@@ -112,11 +112,12 @@ def load_models() -> None:
         # Apply DUET compression
         model.configure_duet(
             visionzip_enabled=True,
+            use_ori_visionzip=False,
             dominant_tokens=CLI.visionzip_dominant,
             contextual_tokens=CLI.visionzip_contextual,
             pdrop_enabled=CLI.pdrop_enabled,
             layer_list=CLI.pdrop_layers,
-            ratio_list=CLI.pdrop_ratios,
+            image_token_ratio_list=CLI.pdrop_ratios,
         )
         logger.info(
             "DUET configured: visionzip=%d/%d pdrop=%s layers=%s ratios=%s",
