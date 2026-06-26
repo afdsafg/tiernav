@@ -185,7 +185,8 @@ class ChatCompletionRequest(BaseModel):
 
 # ─── Image utilities ────────────────────────────────────────────────────────
 
-TARGET_SIZE = (720, 640)
+# Image resize target (cfg default: prompt_h=360, prompt_w=360)
+TARGET_SIZE = (360, 360)
 
 def decode_data_url(url: str) -> Image.Image:
     if url.startswith("data:"):
