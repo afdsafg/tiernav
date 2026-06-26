@@ -10,6 +10,7 @@ os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ.setdefault("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
 
 import argparse
+import functools
 import json
 import logging
 import multiprocessing as mp
@@ -22,6 +23,7 @@ from typing import Optional
 
 import numpy as np
 import open_clip
+import torch
 from omegaconf import OmegaConf
 from ultralytics import SAM, YOLOWorld
 
@@ -29,6 +31,11 @@ from src.agent_workflow import run_episode_two_tier
 from src.const import INVALID_SCENE_ID
 from src.logger_aeqa import Logger
 from src.utils import get_pts_angle_aeqa
+
+# Monkey-patch torch.load for PyTorch 2.6 compatibility
+# (2.6 changed weights_only default to True, breaking checkpoint loads)
+_original_torch_load = torch.load
+torch.load = functools.partial(_original_torch_load, weights_only=False)
 
 
 DEFAULT_SPLITS = ((0.0, 0.5), (0.5, 1.0))
