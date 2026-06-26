@@ -9,6 +9,14 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ.setdefault("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
 
+# EGL headless rendering (required for NVIDIA GPU without display)
+os.environ.setdefault(
+    "__EGL_VENDOR_LIBRARY_FILENAMES",
+    "/usr/share/glvnd/egl_vendor.d/10_nvidia.json",
+)
+os.environ.setdefault("MAGNUM_GPU_CONTEXT", "egl")
+os.environ.setdefault("EGL_DEVICE_ID", "0")
+
 import argparse
 import functools
 import json
@@ -36,6 +44,46 @@ from src.utils import get_pts_angle_aeqa
 # (2.6 changed weights_only default to True, breaking checkpoint loads)
 _original_torch_load = torch.load
 torch.load = functools.partial(_original_torch_load, weights_only=False)
+
+
+# Monkey-patch habitat-sim SimulatorConfiguration for egg ABI compatibility.
+# The installed egg has C++ bindings compiled from an older habitat-sim source
+# that lacks the `agents` attribute, but the Python wrapper (_sanitize_config)
+# expects it. Patch the validator to tolerate missing C++ attributes.
+def _patch_habitat_sim() -> None:
+    try:
+        import habitat_sim.simulator as _sim_mod
+
+        # Check if patch already applied
+        if hasattr(_sim_mod, "_agents_patched"):
+            return
+
+        _orig_post_init = getattr(_sim_mod.Simulator, "__attrs_post_init__", None)
+        if _orig_post_init is None:
+            return
+
+        def _safe_post_init(self):
+            """Wrapper that catches AttributeError on agents check."""
+            try:
+                _orig_post_init(self)
+            except AttributeError as e:
+                if "agents" in str(e):
+                    # Old C++ bindings — ignore the agents validation
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "habitat-sim C++ bindings missing 'agents' attribute; "
+                        "skipping _sanitize_config agents check."
+                    )
+                else:
+                    raise
+
+        _sim_mod.Simulator.__attrs_post_init__ = _safe_post_init
+        _sim_mod._agents_patched = True
+    except ImportError:
+        pass
+
+
+_patch_habitat_sim()
 
 
 DEFAULT_SPLITS = ((0.0, 0.5), (0.5, 1.0))
