@@ -171,10 +171,7 @@ def compute_3d_iou_accurate_batch(bbox1, bbox2):
     bbox1 = expand_3d_box(bbox1, 0.02)
     bbox2 = expand_3d_box(bbox2, 0.02)
 
-    try:
-        import pytorch3d.ops as ops
-    except ImportError:
-        return _compute_3d_iou_fallback(bbox1, bbox2)
+    import pytorch3d.ops as ops
 
     bbox1 = bbox1[:, [0, 2, 5, 3, 1, 7, 4, 6]]
     bbox2 = bbox2[:, [0, 2, 5, 3, 1, 7, 4, 6]]
@@ -184,27 +181,6 @@ def compute_3d_iou_accurate_batch(bbox1, bbox2):
     return iou
 
 
-def _compute_3d_iou_fallback(bbox1, bbox2):
-    """NumPy-based 3D axis-aligned IoU fallback when pytorch3d is unavailable."""
-    import numpy as np
-    b1 = bbox1.detach().cpu().numpy()  # (M, 8, 3)
-    b2 = bbox2.detach().cpu().numpy()  # (N, 8, 3)
-    mins1 = b1.min(axis=1)  # (M, 3)
-    maxs1 = b1.max(axis=1)
-    mins2 = b2.min(axis=1)  # (N, 3)
-    maxs2 = b2.max(axis=1)
-    ious = np.zeros((len(b1), len(b2)), dtype=np.float32)
-    for i in range(len(b1)):
-        for j in range(len(b2)):
-            inter_min = np.maximum(mins1[i], mins2[j])
-            inter_max = np.minimum(maxs1[i], maxs2[j])
-            inter = np.prod(np.maximum(0, inter_max - inter_min))
-            vol1 = np.prod(maxs1[i] - mins1[i])
-            vol2 = np.prod(maxs2[j] - mins2[j])
-            union = vol1 + vol2 - inter
-            ious[i, j] = inter / union if union > 0 else 0
-    import torch
-    return torch.from_numpy(ious).to(bbox1.device)
 
 
 def compute_3d_giou_accurate(obj1, obj2):
