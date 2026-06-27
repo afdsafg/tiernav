@@ -188,6 +188,12 @@ def silent_perception_step(
     Returns: (new_pts, new_angle) — 不变，移动由调用方完成。
     """
     # step 计数器：每次调用都递增，保证 snapshot_id 唯一
+    # TODO(D5): module-level function-attribute hack. Moving into TwoTierState.step_counter
+    # is out-of-scope for phase-1 (LangGraph formalization) — it would require threading
+    # state through silent_perception_step, observe_panorama, scene_aeqa._goal_directed_step,
+    # and 6+ read/reset sites in agent_workflow.py + agent_executor.py. Risk of behavior
+    # drift in a phase-1 (behavior-preserving) refactor is too high. Revisit in a later
+    # phase once LangGraph state threading is the default execution path.
     if not hasattr(silent_perception_step, '_step_counter'):
         silent_perception_step._step_counter = -1
         silent_perception_step._last_pos = None

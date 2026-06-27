@@ -27,6 +27,11 @@ from src.agent_memory import MemoryStore
 from src.agent_notebook import EvidenceNotebook
 from src.agent_planner import Planner, PlannerAction, PLANNER_SYSTEM_PROMPT
 from src.scene_graph_memory import SceneGraphMemory
+from src.shared_helpers import (
+    _NAV_OBJ_INVALID,
+    _is_valid_object_desc,
+    _build_messages as _build_messages_shared,
+)
 from src.agent_tools import (
     silent_perception_step,
     build_planner_topdown_map_b64,
@@ -907,55 +912,12 @@ def _register_new_seeds(seed_view_manager, tsdf_planner, scene, agent_pts):
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
-# Invalid arguments for navigate_to_object — these are not object descriptions
-_NAV_OBJ_INVALID = {
-    "", "forward", "backward", "left", "right", "up", "down",
-    "explore", "navigate", "search", "look", "go", "move",
-    "room", "room 0", "room 1", "room 2", "room 3", "room 4",
-    "frontier", "frontier 0", "frontier 1", "frontier 2",
-    "yes", "no", "true", "false", "none", "null",
-    "the kitchen", "the bathroom", "the bedroom", "the living room",
-    "kitchen", "bathroom", "bedroom", "living room",
-}
-
-def _is_valid_object_desc(desc: str) -> bool:
-    """Check if a string is a valid concrete object description for GroundingDINO.
-
-    Rejects empty strings, directions, room names, and other non-object terms.
-    """
-    if not desc or not isinstance(desc, str):
-        return False
-    desc_clean = desc.strip().lower()
-    if desc_clean in _NAV_OBJ_INVALID:
-        return False
-    if len(desc_clean) < 2:
-        return False
-    # Reject pure numbers (room/frontier IDs)
-    try:
-        int(desc_clean)
-        return False
-    except ValueError:
-        pass
-    return True
-
-
+# _NAV_OBJ_INVALID, _is_valid_object_desc, _build_messages deduplicated into
+# src/shared_helpers.py (D5 tech-debt cleanup). Thin wrapper below preserves the
+# original closed-over-SYSTEM_PROMPT signature for any in-module caller.
 def _build_messages(context: ContextManager) -> List[dict]:
-    """Build the message list for VLM from context manager state."""
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    # Add stage transition summaries from previous stages
-    for transition in context.transitions:
-        if transition.from_stage != context.current_stage:
-            summary_text = (
-                f"[Stage {transition.from_stage}→{transition.to_stage} summary]\n"
-                f"{transition.summary}"
-            )
-            messages.append({"role": "assistant", "content": summary_text})
-
-    # Add current stage messages
-    messages.extend(context.stage_messages)
-
-    return messages
+    """Build VLM message list. Delegates to shared_helpers._build_messages."""
+    return _build_messages_shared(context, system_prompt=SYSTEM_PROMPT)
 
 
 def _format_rooms_info(tsdf_planner) -> str:
@@ -1735,59 +1697,6 @@ def run_episode_two_tier(
                 scene.__del__()
             except Exception:
                 pass
-
-
-# ── Helpers ──────────────────────────────────────────────────────────────
-
-# Invalid arguments for navigate_to_object — these are not object descriptions
-_NAV_OBJ_INVALID = {
-    "", "forward", "backward", "left", "right", "up", "down",
-    "explore", "navigate", "search", "look", "go", "move",
-    "room", "room 0", "room 1", "room 2", "room 3", "room 4",
-    "frontier", "frontier 0", "frontier 1", "frontier 2",
-    "yes", "no", "true", "false", "none", "null",
-    "the kitchen", "the bathroom", "the bedroom", "the living room",
-    "kitchen", "bathroom", "bedroom", "living room",
-}
-
-def _is_valid_object_desc(desc: str) -> bool:
-    """Check if a string is a valid concrete object description for GroundingDINO.
-
-    Rejects empty strings, directions, room names, and other non-object terms.
-    """
-    if not desc or not isinstance(desc, str):
-        return False
-    desc_clean = desc.strip().lower()
-    if desc_clean in _NAV_OBJ_INVALID:
-        return False
-    if len(desc_clean) < 2:
-        return False
-    # Reject pure numbers (room/frontier IDs)
-    try:
-        int(desc_clean)
-        return False
-    except ValueError:
-        pass
-    return True
-
-
-def _build_messages(context: ContextManager) -> List[dict]:
-    """Build the message list for VLM from context manager state."""
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    # Add stage transition summaries from previous stages
-    for transition in context.transitions:
-        if transition.from_stage != context.current_stage:
-            summary_text = (
-                f"[Stage {transition.from_stage}→{transition.to_stage} summary]\n"
-                f"{transition.summary}"
-            )
-            messages.append({"role": "assistant", "content": summary_text})
-
-    # Add current stage messages
-    messages.extend(context.stage_messages)
-
-    return messages
 
 
 def _format_rooms_info(tsdf_planner) -> str:
