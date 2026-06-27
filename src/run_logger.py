@@ -369,6 +369,17 @@ class RunLogger:
         self._episode_vlm_calls += n
         self.manifest.total_vlm_calls += n
 
+    def log_prompt_cache(self, episode_id: str, round_idx: int,
+                         cacheable_tokens: int, non_cacheable_tokens: int):
+        """Record prompt cache stats for A/B analysis (P2)."""
+        if not hasattr(self, '_prompt_cache_log'):
+            self._prompt_cache_log = []
+        self._prompt_cache_log.append({
+            "episode_id": episode_id, "round": round_idx,
+            "cacheable_tokens": cacheable_tokens,
+            "non_cacheable_tokens": non_cacheable_tokens,
+        })
+
     def log_compression_layer(self, layer: str, round_idx: int, input_count: int,
                               output_count: int, token_est: int, duration: float):
         """Record per-layer compression stats for A/B analysis (P0a)."""
