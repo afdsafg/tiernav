@@ -90,3 +90,15 @@ def after_submit(state: dict) -> str:
     if state.get("terminal", True) is False:
         return "verify"
     return "end"
+
+
+def after_critic(state: dict) -> str:
+    """Conditional edge leaving critic_node (D3).
+
+    Routes back to ``planner`` on veto (force re-decision with feedback),
+    forward to ``loop_guard`` otherwise (preserves original planner→loop_guard
+    flow when critic is disabled or does not veto).
+    """
+    if state.get("critic_veto", False):
+        return "planner"
+    return "loop_guard"

@@ -1,4 +1,4 @@
-"""7 node functions for the Two-Tier LangGraph state machine.
+"""8 node functions for the Two-Tier LangGraph state machine.
 
 Each node is a thin wrapper around existing helpers in agent_workflow.py.
 The nested closures (`_build_scene_analysis`, `_build_actions`,
@@ -13,6 +13,7 @@ Nodes:
   1. init_node          — episode setup + initial panorama (wraps :1160-1251)
   2. build_context_node — assemble 4-component planner prompt (wraps :1445-1532)
   3. planner_node       — LLM decision + Stage 6.5 frontier sub-selection (:1538-1580)
+  3b. critic_node       — (D3) evaluates PlannerAction, can veto + force re-decision
   4. loop_guard_node    — 3 guards + log_decision (wraps :1582-1612)
   5. executor_node      — dispatch action via ToolRegistry (wraps :1633-1635)
   6. memory_update_node — notebook + scene-graph + rejected marking (:1637-1663)
@@ -594,6 +595,33 @@ def planner_node(state: TwoTierState, config) -> dict:
         "current_action": action,
         "round_traces": [round_trace],  # append via operator.add reducer
     }
+
+
+def critic_node(state: TwoTierState, config) -> dict:
+    """Node 3b (D3): Critic — evaluates PlannerAction, can veto + force re-decision.
+
+    When ``critic.enabled=false`` (default), acts as passthrough (returns empty
+    dict → no veto). When enabled, evaluates ``current_action`` and may set
+    ``critic_veto=True`` with ``critic_feedback`` to route back to planner for a
+    re-decision. Real LLM-based evaluation is a future lever (phase-1 out-of-scope
+    #1); stub here never vetoes, so behavior is preserved when flag flips on.
+
+    A/B: critic on vs off, compare accuracy + rounds_used.
+    """
+    res = config["configurable"]["resources"]
+
+    # Check if critic is enabled (optional attr on Resources; absent → off)
+    if not getattr(res, "critic_enabled", False):
+        return {}  # passthrough
+
+    action = state.get("current_action")
+    if not action:
+        return {}
+
+    # TODO: Implement real critic logic (LLM-based evaluation)
+    # ponytail: stub never vetoes — swap for LLM critic call when wiring phase-1
+    # out-of-scope #1. Ceiling: N veto rounds before forced forward.
+    return {"critic_veto": False, "critic_feedback": ""}
 
 
 def loop_guard_node(state: TwoTierState, config) -> dict:

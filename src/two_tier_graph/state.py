@@ -99,6 +99,10 @@ class TwoTierState(TypedDict):
     stall_signal: Optional[dict]               # serialized StallSignal
     verification_attempted: bool               # P3 verify nudge flag
 
+    # ── Critic (D3) ──
+    critic_veto: bool                          # True → force planner re-decision
+    critic_feedback: str                       # feedback injected into re-decision
+
     # ── Visual recall (P5) ──
     need_visual_recall: bool
 

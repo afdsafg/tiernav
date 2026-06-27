@@ -27,9 +27,10 @@ from typing import Callable
 
 from langgraph.graph import END, START, StateGraph
 
-from .edges import after_guard, after_memory, after_submit
+from .edges import after_critic, after_guard, after_memory, after_submit
 from .nodes import (
     build_context_node,
+    critic_node,
     executor_node,
     init_node,
     loop_guard_node,
@@ -58,6 +59,7 @@ def build_two_tier_graph():
     g.add_node("init", init_node)
     g.add_node("build_context", build_context_node)
     g.add_node("planner", planner_node)
+    g.add_node("critic", critic_node)  # D3: planner→critic→loop_guard
     g.add_node("loop_guard", loop_guard_node)
     g.add_node("executor", executor_node)
     g.add_node("memory_update", memory_update_node)
@@ -68,9 +70,22 @@ def build_two_tier_graph():
     g.add_edge(START, "init")
     g.add_edge("init", "build_context")
     g.add_edge("build_context", "planner")
-    g.add_edge("planner", "loop_guard")
+    g.add_edge("planner", "critic")  # D3: critic between planner & loop_guard
     g.add_edge("executor", "memory_update")
     g.add_edge("stall_recovery", "build_context")  # P3: hint injected, retry
+
+    # ── Conditional edge: after_critic (leaves critic_node, D3) ──
+    # planner→loop_guard replaced by planner→critic→(after_critic)→loop_guard|planner
+    # "planner"    → planner (veto: force re-decision with feedback)
+    # "loop_guard" → loop_guard (no veto: original flow)
+    g.add_conditional_edges(
+        "critic",
+        after_critic,
+        {
+            "planner": "planner",
+            "loop_guard": "loop_guard",
+        },
+    )
 
     # ── Conditional edge: after_submit (leaves submit_node) ──
     # P3 verification nudge: on first fallback entry, route back to
