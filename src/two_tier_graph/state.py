@@ -86,7 +86,9 @@ class TwoTierState(TypedDict):
     # ── Compression config + log (P0a: layered compression) ──
     compress_threshold: int                  # L_compressed trigger, default 5
     index_refresh_interval: int              # L_index trigger, default 3
-    l0_index_text: str                       # cached L0 index string
+    l0_index_text: str                       # cached L0 index string (always-in-prompt)
+    visual_memory_state: dict                # serialized VisualMemoryIndex (entries/text/round)
+    loaded_snapshot_ids: list                # snapshot_ids seen this episode (cross-round dedup)
     compression_log: Annotated[list, operator.add]  # per-layer stats
 
     # ── Transition tracking (P0b: transition.reason) ──

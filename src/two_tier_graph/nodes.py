@@ -424,6 +424,12 @@ def build_context_node(state: TwoTierState, config) -> dict:
             )
 
     # Write prompt to disk (wraps :1492-1505)
+    # C1: L0 visual memory index — always-in-prompt, one line per snapshot.
+    l0_text = state.get("l0_index_text", "")
+    if l0_text:
+        scene_analysis = (
+            f"\n[L0 Visual Memory Index]\n{l0_text}\n\n{scene_analysis}"
+        )
     prompt_text = res.planner.build_prompt(
         question=state["question"],
         history=history,
@@ -726,19 +732,57 @@ def memory_update_node(state: TwoTierState, config) -> dict:
             steps_taken=current_step, progress=evidence.progress,
         )
 
-    # ── L_index: stub (C1 will implement); failure must never block ──
+    # ── L_index: L0 visual memory index (C1) — failure must never block ──
     try:
-        # ponytail: C1 will build L0 index from notebook here.
+        from src.two_tier_graph.visual_memory import VisualMemoryIndex
+        refresh_interval = state.get("index_refresh_interval", 3)
+        visual_idx = VisualMemoryIndex.from_state(
+            state.get("visual_memory_state", {}),
+            refresh_interval=refresh_interval,
+        )
+        # Extract snapshot-equivalent records from this round's evidence.
+        # ponytail: TrajectoryEvidence has no pose/object_class fields; we
+        # synthesize them from action + state. key_frames are snapshot_ids.
+        # When C1b adds a richer snapshot extractor (CLIP ordering), swap here.
+        pose = tuple(state.get("pose", {}).get("pts", []) or ())
+        object_class = action.object_name or evidence.subgoal or "unknown"
+        one_line_desc = evidence.progress or evidence.outcome
+        snapshot_ids = list(evidence.key_frames) or [f"r{rounds_used}_evidence"]
+        loaded = set(state.get("loaded_snapshot_ids", []))
+        new_loaded = list(loaded)
+        for snap_id in snapshot_ids:
+            if snap_id in loaded:
+                continue  # cross-round dedup via loaded_snapshot_ids
+            visual_idx.update(
+                round_idx=rounds_used,
+                pose=pose,
+                object_class=object_class,
+                one_line_desc=one_line_desc,
+                snapshot_id=snap_id,
+                clip_embedding=None,  # ponytail: C1b wires real CLIP embedding here
+            )
+            loaded.add(snap_id)
+            new_loaded.append(snap_id)
+        if rounds_used % refresh_interval == 0:
+            visual_idx._last_rebuild_round = rounds_used
         compression_log.append({
             "layer": "L_index", "round": rounds_used,
-            "status": "stub",
+            "status": "ok",
+            "input_count": len(snapshot_ids),
+            "output_count": len(visual_idx._entries),
         })
+        updates_l0 = {
+            "visual_memory_state": visual_idx.to_state(),
+            "l0_index_text": visual_idx.get_index_text(),
+            "loaded_snapshot_ids": new_loaded,
+        }
     except Exception as exc:
         logger.exception("L_index failed (fallback to L_compressed): %s", exc)
         compression_log.append({
             "layer": "L_index", "round": rounds_used,
             "status": "failed", "error": str(exc),
         })
+        updates_l0 = {}
 
     # Compute exhausted_flag (wraps :1665-1672)
     # NOTE: original uses `action.seed_id or ""` — only seeds, not frontiers.
@@ -780,6 +824,7 @@ def memory_update_node(state: TwoTierState, config) -> dict:
         "compression_log": compression_log,
         "last_transition": transition,
         "transition_log": [transition],
+        **updates_l0,
     }
 
 
