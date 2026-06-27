@@ -242,9 +242,17 @@ def run_episode_two_tier_langgraph(
         }
 
         graph = build_two_tier_graph()
+        # LangGraph default recursion_limit is 25, which is too low for VLN
+        # episodes. Each round visits ~5 nodes (build_context -> planner ->
+        # loop_guard -> executor -> memory_update), plus init + submit.
+        # Set limit = max_planner_rounds * 6 + 20 (generous buffer).
+        recursion_limit = max_planner_rounds * 6 + 20
         final_state = graph.invoke(
             initial_state,
-            config={"configurable": {"resources": resources}},
+            config={
+                "configurable": {"resources": resources},
+                "recursion_limit": recursion_limit,
+            },
         )
 
         # Map terminal state to result dict

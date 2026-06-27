@@ -183,9 +183,9 @@ def call_vlm(
     temperature: float = 0.3,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
-    model_name: str = "mimo-v2.5",
+    model_name: Optional[str] = None,
 ) -> str:
-    """调用 mimo-v2.5 API。"""
+    """调用 VLM API (OpenAI-compatible)."""
 
     if api_key is None:
         from src.const import OPENAI_API_KEY as _key
@@ -193,6 +193,9 @@ def call_vlm(
     if base_url is None:
         from src.const import OPENAI_BASE_URL as _url
         base_url = _url
+    if model_name is None:
+        from src.const import MODEL_NAME as _model
+        model_name = _model
 
     # Deep copy messages to avoid mutation
     api_messages = []
