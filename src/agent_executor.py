@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+import numpy as np
+
 from src.agent_evidence import TrajectoryEvidence
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,7 @@ class Executor:
         self._pts = None
         self._angle = None
         self._step_counter = 0
+        self._path_length = 0.0
         self._last_panorama_views = []
 
     # ── state ─────────────────────────────────────────────────────────
@@ -50,6 +53,10 @@ class Executor:
         self._pts = pts
         self._angle = angle
         self._step_counter = step_counter
+
+    @property
+    def path_length(self) -> float:
+        return self._path_length
 
     # ── helpers ───────────────────────────────────────────────────────
 
@@ -89,6 +96,7 @@ class Executor:
     def explore_panorama(self, config: Optional[dict] = None) -> TrajectoryEvidence:
         from src.agent_tools import observe_panorama
 
+        old_pts = self._pts
         pts, angle, _mosaic_b64, text, panorama_views = observe_panorama(
             self.scene,
             self.tsdf,
@@ -105,6 +113,8 @@ class Executor:
             self.models["clip_tokenizer"],
         )
         self._pts, self._angle = pts, angle
+        if self._pts is not None and old_pts is not None:
+            self._path_length += float(np.linalg.norm(np.asarray(self._pts) - np.asarray(old_pts)))
         self._last_panorama_views = panorama_views or []
         self._sync_step_counter()
 
@@ -163,6 +173,8 @@ class Executor:
             self._step_counter,
         )
         self._pts, self._angle = pts, angle
+        if self._pts is not None and old_pts is not None:
+            self._path_length += float(np.linalg.norm(np.asarray(self._pts) - np.asarray(old_pts)))
         self._sync_step_counter()
 
         gd_quality = (
@@ -206,6 +218,7 @@ class Executor:
         except (ValueError, TypeError):
             room_id = 0
 
+        old_pts = self._pts
         pts, angle, success, status, _img = navigate_to_seed(
             self.scene,
             self.tsdf,
@@ -223,6 +236,8 @@ class Executor:
             self._step_counter,
         )
         self._pts, self._angle = pts, angle
+        if self._pts is not None and old_pts is not None:
+            self._path_length += float(np.linalg.norm(np.asarray(self._pts) - np.asarray(old_pts)))
         self._sync_step_counter()
 
         arrived_room = (
@@ -250,6 +265,7 @@ class Executor:
         except (ValueError, TypeError):
             fid = 0
 
+        old_pts = self._pts
         pts, angle, success, status, _img = navigate_to_frontier(
             self.scene,
             self.tsdf,
@@ -267,6 +283,8 @@ class Executor:
             self._step_counter,
         )
         self._pts, self._angle = pts, angle
+        if self._pts is not None and old_pts is not None:
+            self._path_length += float(np.linalg.norm(np.asarray(self._pts) - np.asarray(old_pts)))
         self._sync_step_counter()
 
         arrived_room = (

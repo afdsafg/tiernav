@@ -448,6 +448,7 @@ def run_episode(
         "answer": "",
         "success": False,
         "steps_taken": 0,
+        "path_length": 0.0,
         "stages_completed": 0,
         "error": "",
     }
@@ -759,6 +760,7 @@ def run_episode(
                     result["answer"] = answer
                     result["success"] = True
                     result["steps_taken"] = _low_level_steps()
+                    result["path_length"] = 0.0  # legacy stage pipeline, no executor
                     result["stages_completed"] = 5
                     current_stage = "done"
                 elif tool == "navigate_to_object":
@@ -840,10 +842,11 @@ def run_episode(
             answer = vlm_parsed.get("answer", vlm_parsed.get("arguments", "unanswerable"))
             logger.info(f"Final answer: {answer}")
 
-            result["answer"] = answer
-            result["success"] = "unanswerable" not in answer.lower()
-            result["steps_taken"] = _low_level_steps()
-            result["stages_completed"] = 6
+        result["answer"] = answer
+        result["success"] = "unanswerable" not in answer.lower()
+        result["steps_taken"] = _low_level_steps()
+        result["path_length"] = 0.0  # legacy stage pipeline, no executor
+        result["stages_completed"] = 6
 
     except Exception as e:
         logger.error(f"Workflow error: {e}")
@@ -1146,6 +1149,7 @@ def run_episode_two_tier(
         "answer": "",
         "success": False,
         "steps_taken": 0,
+        "path_length": 0.0,
         "rounds_used": 0,
         "error": "",
     }
@@ -1618,6 +1622,7 @@ def run_episode_two_tier(
                 result["answer"] = action.answer or ""
                 result["success"] = True
                 result["steps_taken"] = silent_perception_step._step_counter
+                result["path_length"] = executor.path_length
                 result["rounds_used"] = rounds_used
                 logger.info(f"Answer submitted at round {rounds_used}: {result['answer']}")
                 if run_logger is not None:

@@ -360,10 +360,10 @@ def main(
         logger.log_episode_result(
             success=task_success,
             question_id=question_id,
-            explore_dist=0.0,
+            explore_dist=float(result.get("path_length", 0.0)),
             gpt_answer=gpt_answer,
-            n_filtered_snapshots=0,
-            n_total_snapshots=0,
+            n_filtered_snapshots=int(result.get("n_filtered_snapshots", 0)),
+            n_total_snapshots=int(result.get("n_total_snapshots", 0)),
             n_total_frames=steps_taken,
         )
 

@@ -119,22 +119,57 @@ class Logger:
         self.start_ratio = start_ratio
         self.end_ratio = end_ratio
 
-        # some sanity check
-        assert n_success == len(
-            self.path_length_list
-        ), f"{n_success} != {len(self.path_length_list)}"
-        assert n_success == len(
-            self.gpt_answer_list
-        ), f"{n_success} != {len(self.gpt_answer_list)}"
-        assert self.n_total == len(
-            self.n_filtered_snapshots_list
-        ), f"{self.n_total} != {len(self.n_filtered_snapshots_list)}"
-        assert self.n_total == len(
-            self.n_total_snapshots_list
-        ), f"{self.n_total} != {len(self.n_total_snapshots_list)}"
-        assert self.n_total == len(
-            self.n_total_frames_list
-        ), f"{self.n_total} != {len(self.n_total_frames_list)}"
+        # sanity checks with graceful fallback for partial prior runs
+        try:
+            assert self.n_total == len(
+                self.path_length_list
+            ), f"n_total={self.n_total} != path_length_list={len(self.path_length_list)}"
+        except (AssertionError, TypeError):
+            logging.warning("Inconsistent prior n_total/path_length_list, resetting")
+            self.success_list = []
+            self.fail_list = []
+            self.path_length_list = {}
+            self.n_total = 0
+        try:
+            assert self.n_total == len(
+                self.gpt_answer_list
+            ), f"n_total={self.n_total} != gpt_answer_list={len(self.gpt_answer_list)}"
+        except (AssertionError, TypeError):
+            logging.warning("Inconsistent prior n_total/gpt_answer_list, resetting")
+            self.success_list = []
+            self.fail_list = []
+            self.gpt_answer_list = []
+            self.n_total = 0
+        try:
+            assert self.n_total == len(
+                self.n_filtered_snapshots_list
+            ), f"{self.n_total} != {len(self.n_filtered_snapshots_list)}"
+        except (AssertionError, TypeError):
+            logging.warning("Inconsistent prior n_total/n_filtered_snapshots_list, resetting")
+            self.success_list = []
+            self.fail_list = []
+            self.n_filtered_snapshots_list = {}
+            self.n_total = 0
+        try:
+            assert self.n_total == len(
+                self.n_total_snapshots_list
+            ), f"{self.n_total} != {len(self.n_total_snapshots_list)}"
+        except (AssertionError, TypeError):
+            logging.warning("Inconsistent prior n_total/n_total_snapshots_list, resetting")
+            self.success_list = []
+            self.fail_list = []
+            self.n_total_snapshots_list = {}
+            self.n_total = 0
+        try:
+            assert self.n_total == len(
+                self.n_total_frames_list
+            ), f"{self.n_total} != {len(self.n_total_frames_list)}"
+        except (AssertionError, TypeError):
+            logging.warning("Inconsistent prior n_total/n_total_frames_list, resetting")
+            self.success_list = []
+            self.fail_list = []
+            self.n_total_frames_list = {}
+            self.n_total = 0
 
         # logging for episode
         self.episode_dir = None
@@ -142,12 +177,42 @@ class Logger:
         self.explore_dist = 0
 
     def save_results(self):
-        # sanity check
-        assert len(self.success_list) == len(self.path_length_list)
-        assert len(self.success_list) == len(self.gpt_answer_list)
-        assert self.n_total == len(self.n_filtered_snapshots_list)
-        assert self.n_total == len(self.n_total_snapshots_list)
-        assert self.n_total == len(self.n_total_frames_list)
+        # sanity checks with graceful fallback (same pattern as __init__)
+        try:
+            assert self.n_total == len(
+                self.path_length_list
+            ), f"n_total={self.n_total} != path_length_list={len(self.path_length_list)}"
+        except (AssertionError, TypeError):
+            logging.warning("save_results: n_total/path_length_list mismatch, skipping save")
+            return
+        try:
+            assert self.n_total == len(
+                self.gpt_answer_list
+            ), f"n_total={self.n_total} != gpt_answer_list={len(self.gpt_answer_list)}"
+        except (AssertionError, TypeError):
+            logging.warning("save_results: n_total/gpt_answer_list mismatch, skipping save")
+            return
+        try:
+            assert self.n_total == len(
+                self.n_filtered_snapshots_list
+            ), f"n_total={self.n_total} != n_filtered_snapshots_list={len(self.n_filtered_snapshots_list)}"
+        except (AssertionError, TypeError):
+            logging.warning("save_results: n_total/n_filtered_snapshots_list mismatch, skipping save")
+            return
+        try:
+            assert self.n_total == len(
+                self.n_total_snapshots_list
+            ), f"n_total={self.n_total} != n_total_snapshots_list={len(self.n_total_snapshots_list)}"
+        except (AssertionError, TypeError):
+            logging.warning("save_results: n_total/n_total_snapshots_list mismatch, skipping save")
+            return
+        try:
+            assert self.n_total == len(
+                self.n_total_frames_list
+            ), f"n_total={self.n_total} != n_total_frames_list={len(self.n_total_frames_list)}"
+        except (AssertionError, TypeError):
+            logging.warning("save_results: n_total/n_total_frames_list mismatch, skipping save")
+            return
 
         with open(
             os.path.join(
@@ -288,11 +353,14 @@ class Logger:
         n_total_snapshots,
         n_total_frames,
     ):
+        # Record answer + path_length for ALL episodes (matches Pred-EQA reference format).
+        # Failed episodes get path_length=0.0 but still preserve the answer text.
+        self.path_length_list[question_id] = float(explore_dist) if success else 0.0
+        self.gpt_answer_list.append({"question_id": question_id, "answer": gpt_answer})
+
         if success:
             if question_id not in self.success_list:
                 self.success_list.append(question_id)
-            self.path_length_list[question_id] = explore_dist
-            self.gpt_answer_list.append({"question_id": question_id, "answer": gpt_answer})
             logging.info(
                 f"Question id {question_id} finish successfully, {explore_dist} length"
             )

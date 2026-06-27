@@ -260,6 +260,12 @@ def run_episode_two_tier_langgraph(
         result["success"] = bool(final_state.get("success", False))
         result["steps_taken"] = int(final_state.get("steps_taken", 0))
         result["rounds_used"] = int(final_state.get("rounds_used", 0))
+        # Path length: the Executor accumulates distance during navigation
+        result["path_length"] = float(getattr(resources.executor, "path_length", 0.0))
+        # Snapshot counts: not yet implemented in LangGraph pipeline.
+        # TODO: wire snapshot tracking from executor/memory-update nodes.
+        result["n_filtered_snapshots"] = 0
+        result["n_total_snapshots"] = 0
         return result
 
     except Exception as e:
