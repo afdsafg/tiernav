@@ -684,9 +684,14 @@ a single script. Outputs scores.json in result dir."
 
 **Server work.** SSH to server, pull latest, run both engines on full 41 questions.
 
-### Step 1: SSH + sync code
+### Step 1: Sync code to server
 
 ```bash
+# === Local: push latest changes ===
+cd /home/afdsafg/下载/new/tiernav
+git push origin main
+
+# === Server: pull latest + verify ===
 ssh root@8.149.225.149 -p 58746  # password: 19340db6-8831-4684-aa77-00da1e13675c
 cd /root/tiernav
 git pull origin main
@@ -771,7 +776,22 @@ This is accuracy_0 baseline for all subsequent lever A/B."
 
 **Server work.** Run first episode of each of 34 valid scenes (36 - 2 corrupted).
 
-### Step 1: Run GOATBench with crash monitoring
+### Step 1: Sync code to server
+
+```bash
+# === Local: push latest changes ===
+cd /home/afdsafg/下载/new/tiernav
+git push origin main
+
+# === Server: pull latest + verify ===
+ssh root@8.149.225.149 -p 58746  # password: 19340db6-8831-4684-aa77-00da1e13675c
+cd /root/tiernav
+git pull origin main
+# Verify env: 3dmem python + langgraph
+/root/miniconda3/envs/3dmem/bin/python -c "import langgraph; print('langgraph OK')"
+```
+
+### Step 2: Run GOATBench with crash monitoring
 
 ```bash
 ssh root@8.149.225.149 -p 58746
@@ -792,7 +812,7 @@ done
 echo "GOATBench finished. Exit: $?"
 ```
 
-### Step 2: Verify output completeness
+### Step 3: Verify output completeness
 
 ```bash
 ls -la /root/tiernav/results/exp_goatbench/
@@ -809,7 +829,7 @@ cat /root/tiernav/results/exp_goatbench/corrupted_scenes.json
 
 Expected: 34 episodes across 3 task types, 2 scenes in corrupted_scenes.json.
 
-### Step 3: Copy results to local + record
+### Step 4: Copy results to local + record
 
 ```bash
 # Local:
@@ -820,7 +840,7 @@ scp -P 58746 -r root@8.149.225.149:/root/tiernav/results/exp_goatbench/* \
 
 Record to `docs/experiments/2026-06-28-baseline-goatbench.md`. Note: GOATBench is for "agent works normally" check, not primary metric.
 
-### Step 4: Commit
+### Step 5: Commit
 
 ```bash
 git add docs/experiments/2026-06-28-baseline-goatbench.md
