@@ -805,7 +805,8 @@ def memory_update_node(state: TwoTierState, config) -> dict:
         # ponytail: TrajectoryEvidence has no pose/object_class fields; we
         # synthesize them from action + state. key_frames are snapshot_ids.
         # When C1b adds a richer snapshot extractor (CLIP ordering), swap here.
-        pose = tuple(state.get("pose", {}).get("pts", []) or ())
+        pts = state.get("pose", {}).get("pts", [])
+        pose = tuple(pts) if pts is not None else ()
         object_class = action.object_name or evidence.subgoal or "unknown"
         one_line_desc = evidence.progress or evidence.outcome
         snapshot_ids = list(evidence.key_frames) or [f"r{rounds_used}_evidence"]
