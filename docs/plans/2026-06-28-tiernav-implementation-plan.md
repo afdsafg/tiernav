@@ -77,11 +77,19 @@ Phase D (Phase 3 extensions — mostly parallel)
 | **A** | A1: Fix AEQA output | ✅ done | `e170bc8` | 6 files, 4 tests. gpt_answer + path_length for all episodes. |
 | | A2: Fix GOATBench crash | ✅ done | `47dfe81` | 2 files, 3 tests. CORRUPTED_SCENES + try/except. |
 | | A3: Merge + verify | ✅ done | — | Clean main, all tests pass. |
-| **B** | B1: Wire scoring | ⏳ pending | — | `scripts/score_aeqa.py` |
-| | B2: AEQA-41 baseline | ⏳ pending | — | Server eval |
+| **B** | B1: Wire scoring | ✅ done | `f02e9d0` | `scripts/score_aeqa.py` |
+| | B2a: AEQA-41 legacy baseline | 🔄 running | — | Server: 9/41 done, 36min. Success 2/9. |
+| | B2b: AEQA-41 langgraph baseline | ⏳ pending | — | Waiting for B2a |
 | | B3: GOATBench baseline | ⏳ pending | — | Server eval |
-| **C** | C0a–C6: Levers | ⏳ pending | — | — |
-| **D** | D1–D5: Phase 3 | ⏳ pending | — | — |
+| **C** | C0a: Layered compression | ✅ done | `c26ac80` | 5 files, 4 tests. L_raw/L_compressed/L_index. |
+| | C0b: transition.reason | ✅ done | `fad12bf` | 4 files, 4 tests. TransitionReason enum. |
+| | C1: Visual memory L0 index | ✅ done | `49cfd8d` | 4 files, 4 tests. VisualMemoryIndex. |
+| | C2: Prompt cache optimization | ✅ done | `457be36` | 3 files, 4 tests. PromptSection registry. |
+| | C3: Stall detection | ✅ done | `36dd3c3` | 6 files, 5 tests. 8 nodes, 4 edges. |
+| | C4: L1 caption store | ✅ done | `656f2b2` | 3 files, 4 tests. CaptionStore disk cache. |
+| | C5: L2 image recall | ✅ done | `2d6552b` | 4 files, 4 tests. ImageRecallStore token budget. |
+| | C6: Fork stub | ✅ done | `d26d2b3` | 3 files, 4 tests. ForkSubagentTool stub. |
+| **D** | D1-D5: Phase 3 | ⏳ pending | — | — |
 
 ---
 
