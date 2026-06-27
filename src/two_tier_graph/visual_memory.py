@@ -14,8 +14,9 @@ Contract:
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -89,3 +90,47 @@ class VisualMemoryIndex:
         idx._text = state.get("text", "")
         idx._last_rebuild_round = state.get("last_rebuild_round", -1)
         return idx
+
+
+class CaptionStore:
+    """L1 caption layer — disk-cached VLM captions per snapshot.
+
+    Borrowed from Claude Code findRelevantMemories. Each snapshot gets a
+    VLM caption (disk-cached at cache_dir/<snapshot_id>.txt).
+    build_context_node retrieves top-K via CLIP similarity.
+    """
+
+    def __init__(self, cache_dir: str):
+        self.cache_dir = cache_dir
+        os.makedirs(cache_dir, exist_ok=True)
+
+    def put(self, snapshot_id: str, caption: str) -> None:
+        """Write caption to disk cache."""
+        path = os.path.join(self.cache_dir, f"{snapshot_id}.txt")
+        with open(path, "w") as f:
+            f.write(caption)
+
+    def get(self, snapshot_id: str) -> Optional[str]:
+        """Read caption from disk cache. Returns None if missing."""
+        path = os.path.join(self.cache_dir, f"{snapshot_id}.txt")
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            return f.read().strip()
+
+    def has(self, snapshot_id: str) -> bool:
+        """True if a caption is cached for snapshot_id."""
+        return os.path.exists(os.path.join(self.cache_dir, f"{snapshot_id}.txt"))
+
+    def top_k(self, query: str, k: int = 3) -> List[str]:
+        """Return top-K captions by CLIP similarity to query.
+
+        TODO: wire real CLIP retrieval. For now returns all cached captions
+        up to k (unranked).
+        """
+        captions: List[str] = []
+        for fname in sorted(os.listdir(self.cache_dir)):
+            if fname.endswith(".txt"):
+                with open(os.path.join(self.cache_dir, fname)) as f:
+                    captions.append(f.read().strip())
+        return captions[:k]

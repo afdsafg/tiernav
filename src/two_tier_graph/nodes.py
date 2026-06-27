@@ -430,6 +430,21 @@ def build_context_node(state: TwoTierState, config) -> dict:
         scene_analysis = (
             f"\n[L0 Visual Memory Index]\n{l0_text}\n\n{scene_analysis}"
         )
+    # P4: L1 caption layer — CLIP top-K captions injected into scene analysis.
+    # TODO: wire real CLIP retrieval. Stub returns all cached captions up to k.
+    try:
+        from src.two_tier_graph.visual_memory import CaptionStore
+        output_dir = state.get("output_dir")
+        if output_dir:
+            cap_store = CaptionStore(cache_dir=os.path.join(output_dir, "captions"))
+            top_captions = cap_store.top_k(query=state["question"], k=3)
+            if top_captions:
+                cap_block = "\n".join(f"- {c}" for c in top_captions)
+                scene_analysis = (
+                    f"\n[L1 Visual Memory Captions]\n{cap_block}\n\n{scene_analysis}"
+                )
+    except Exception:
+        logger.warning("Round %d: L1 caption injection failed", rounds_used, exc_info=True)
     prompt_text = res.planner.build_prompt(
         question=state["question"],
         history=history,
@@ -734,7 +749,7 @@ def memory_update_node(state: TwoTierState, config) -> dict:
 
     # ── L_index: L0 visual memory index (C1) — failure must never block ──
     try:
-        from src.two_tier_graph.visual_memory import VisualMemoryIndex
+        from src.two_tier_graph.visual_memory import VisualMemoryIndex, CaptionStore
         refresh_interval = state.get("index_refresh_interval", 3)
         visual_idx = VisualMemoryIndex.from_state(
             state.get("visual_memory_state", {}),
@@ -763,6 +778,17 @@ def memory_update_node(state: TwoTierState, config) -> dict:
             )
             loaded.add(snap_id)
             new_loaded.append(snap_id)
+        # ── L1 caption layer (P4): disk-cached VLM caption per snapshot ──
+        # TODO: wire real VLM call. Stub uses object_class + one_line_desc.
+        output_dir = state.get("output_dir")
+        if output_dir:
+            cap_store = CaptionStore(cache_dir=os.path.join(output_dir, "captions"))
+            for snap_id in snapshot_ids:
+                if not cap_store.has(snap_id):
+                    # ponytail: placeholder caption — swap for VLM call (e.g.
+                    # res.llm_provider.caption(image_b64)) when wired.
+                    caption = f"{object_class}: {one_line_desc}"
+                    cap_store.put(snap_id, caption)
         if rounds_used % refresh_interval == 0:
             visual_idx._last_rebuild_round = rounds_used
         compression_log.append({
