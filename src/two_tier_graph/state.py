@@ -99,6 +99,9 @@ class TwoTierState(TypedDict):
     stall_signal: Optional[dict]               # serialized StallSignal
     verification_attempted: bool               # P3 verify nudge flag
 
+    # ── Visual recall (P5) ──
+    need_visual_recall: bool
+
     # ── Per-round prompt/context artifacts (last-writer-wins) ──
     scene_analysis: str
     history_text: str

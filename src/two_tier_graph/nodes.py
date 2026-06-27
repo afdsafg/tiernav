@@ -486,6 +486,24 @@ def build_context_node(state: TwoTierState, config) -> dict:
     else:
         logger.warning("Round %d: planner topdown map unavailable", rounds_used)
 
+    # ── L2 image recall (P5): token-budgeted original snapshot recall ──
+    recalled_views = []
+    if state.get("need_visual_recall", False):
+        from src.two_tier_graph.visual_memory import ImageRecallStore
+        output_dir = state.get("output_dir")
+        if output_dir:
+            recall_store = ImageRecallStore(cache_dir=os.path.join(output_dir, "recall"))
+            loaded_ids = set(state.get("loaded_snapshot_ids", []))
+            recalled_views = recall_store.select_for_recall(
+                query=state["question"], loaded_ids=loaded_ids
+            )
+            if recalled_views:
+                current_views = current_views + recalled_views
+                logger.info(
+                    "Round %d: recalled %d snapshots (L2 image recall)",
+                    rounds_used, len(recalled_views),
+                )
+
     return {
         "rounds_used": rounds_used,
         "scene_analysis": scene_analysis,

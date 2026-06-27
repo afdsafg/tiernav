@@ -134,3 +134,53 @@ class CaptionStore:
                 with open(os.path.join(self.cache_dir, fname)) as f:
                     captions.append(f.read().strip())
         return captions[:k]
+
+
+class ImageRecallStore:
+    """L2 image recall layer — token-budgeted original snapshot recall.
+
+    Borrowed from Claude Code loadedNestedMemoryPaths LRU. Recalls original
+    snapshots into prompt when planner requests visual verification.
+    Hard token budget (default 3000 vision tokens, ~3 images).
+    """
+
+    def __init__(self, cache_dir: str, token_budget: int = 3000, tokens_per_image: int = 1000):
+        self.cache_dir = cache_dir
+        self.token_budget = token_budget
+        self.tokens_per_image = tokens_per_image
+        self._registry: Dict[str, dict] = {}  # snapshot_id -> {image_b64, tokens}
+
+    def register(self, snapshot_id: str, image_b64: str, tokens: Optional[int] = None) -> None:
+        """Register a snapshot as available for recall."""
+        self._registry[snapshot_id] = {
+            "image_b64": image_b64,
+            "tokens": tokens if tokens is not None else self.tokens_per_image,
+        }
+
+    def select_for_recall(self, query: str, loaded_ids: set, k: Optional[int] = None) -> List[dict]:
+        """Select snapshots for recall, respecting token budget + LRU dedup.
+
+        Args:
+            query: query text (TODO: CLIP ranking)
+            loaded_ids: already-loaded snapshot IDs (skip these)
+            k: max images (default: token_budget // tokens_per_image)
+
+        Returns:
+            list of {"snapshot_id": str, "image_b64": str, "tokens": int}
+        """
+        if k is None:
+            k = self.token_budget // self.tokens_per_image
+
+        selected: List[dict] = []
+        used_tokens = 0
+        # TODO: CLIP-rank by query similarity. For now: return all unranked.
+        for snap_id, info in self._registry.items():
+            if snap_id in loaded_ids:
+                continue
+            if used_tokens + info["tokens"] > self.token_budget:
+                continue
+            selected.append({"snapshot_id": snap_id, **info})
+            used_tokens += info["tokens"]
+            if len(selected) >= k:
+                break
+        return selected
