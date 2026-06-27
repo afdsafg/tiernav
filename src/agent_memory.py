@@ -25,13 +25,18 @@ class SnapshotEntry:
 class MemoryStore:
     """Agent 静默记忆存储与检索。"""
 
-    def __init__(self, output_dir: str = "/tmp/hmge_memory"):
+    def __init__(self, output_dir: str = "/tmp/hmge_memory", engine: str = "keyword"):
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(os.path.join(output_dir, "snapshots"), exist_ok=True)
         self.snapshots: Dict[str, SnapshotEntry] = {}
         self.query_count = 0
         self.max_queries = 2
+        # D4: A/B config — "llamaindex" | "keyword". Lazy import; keyword fallback.
+        self._semantic_store = None
+        if engine == "llamaindex":
+            from src.two_tier_graph.semantic_memory import SemanticMemoryStore
+            self._semantic_store = SemanticMemoryStore(engine=engine)
 
     def add_snapshot(
         self, snapshot_id: str, image: np.ndarray,
@@ -58,6 +63,13 @@ class MemoryStore:
             image_path=img_path,
             clip_embedding=embedding,
         )
+        # D4: mirror into semantic store if enabled
+        if self._semantic_store is not None:
+            self._semantic_store.add(
+                snapshot_id,
+                " ".join(objects_in_view + [f"room{room_id}"]),
+                {"room_id": room_id, "position_3d": position_3d},
+            )
 
     def query(
         self, text_query: str, top_k: int = 8
@@ -70,6 +82,19 @@ class MemoryStore:
             return [], []
 
         self.query_count += 1
+
+        # D4: semantic retriever path (lazy, gated by config)
+        if self._semantic_store is not None:
+            results = self._semantic_store.query(text_query, top_k=top_k)
+            entries = [
+                self.snapshots[r["id"]]
+                for r in results
+                if r["id"] in self.snapshots
+            ]
+            if entries:
+                paths = [e.image_path for e in entries]
+                return paths, entries
+            # fall through to keyword if no hits
 
         query_words = set(text_query.lower().split())
         candidates = []
