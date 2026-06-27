@@ -11,8 +11,27 @@ writes merge correctly.
 """
 from __future__ import annotations
 
+import enum
 import operator
+from dataclasses import dataclass
 from typing import Annotated, Any, Optional, TypedDict
+
+
+class TransitionReason(str, enum.Enum):
+    CONTINUE = "continue"
+    ROUND_BUDGET = "round_budget"
+    EXHAUSTED = "exhausted"
+    STEP_BUDGET = "step_budget"
+    STALL_RECOVERY = "stall_recovery"  # P3
+    VERIFY_BEFORE_FALLBACK = "verify_before_fallback"  # P3
+
+
+@dataclass
+class Transition:
+    reason: TransitionReason
+    from_node: str
+    to_node: str
+    round_idx: int
 
 
 class CurrentPose(TypedDict):
@@ -69,6 +88,10 @@ class TwoTierState(TypedDict):
     index_refresh_interval: int              # L_index trigger, default 3
     l0_index_text: str                       # cached L0 index string
     compression_log: Annotated[list, operator.add]  # per-layer stats
+
+    # ── Transition tracking (P0b: transition.reason) ──
+    last_transition: Optional[dict]               # Transition as dict (serializable)
+    transition_log: Annotated[list, operator.add]  # accumulates per-round
 
     # ── Per-round prompt/context artifacts (last-writer-wins) ──
     scene_analysis: str

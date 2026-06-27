@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .state import TransitionReason
+
 
 def after_guard(state: dict) -> str:
     """Conditional edge leaving loop_guard_node.
@@ -36,8 +38,10 @@ def after_guard(state: dict) -> str:
 def after_memory(state: dict) -> str:
     """Conditional edge leaving memory_update_node.
 
-    Reproduces the for-loop + entity-exhaustion + step-budget semantics of
-    agent_workflow.py:1665-1677. Order matters:
+    Reads last_transition (written by memory_update_node) to determine routing.
+    P0b: previously recomputed logic inline; now reads from state for testability.
+
+    Order still matters (preserved from agent_workflow.py:1665-1677):
 
       - Round-budget (for-loop end, `:1442` range exhausted) → fallback_submit.
         Checked FIRST because the for-loop is outermost. When rounds_used
@@ -48,22 +52,14 @@ def after_memory(state: dict) -> str:
       - Step-budget (`:1675-1677` `break`) → fallback_submit.
       - Otherwise → continue (next round).
     """
-    rounds_used: int = state.get("rounds_used", 0)
-    max_planner_rounds: int = state.get("max_planner_rounds", 0)
+    transition = state.get("last_transition", {})
+    reason = transition.get("reason", "continue")
 
-    # 1. Round-budget (for-loop end) — checked first, dominates everything.
-    if rounds_used >= max_planner_rounds:
+    if reason == TransitionReason.ROUND_BUDGET.value:
         return "fallback_submit"
-
-    # 2. Entity exhaustion → continue (skips step-budget check).
-    if state.get("exhausted_flag", False):
-        return "continue"
-
-    # 3. Step-budget break.
-    steps_taken: int = state.get("steps_taken", 0)
-    max_total_steps: int = state.get("max_total_steps", 0)
-    if steps_taken >= max_total_steps:
+    if reason == TransitionReason.EXHAUSTED.value:
+        return "continue"  # skip step-budget
+    if reason == TransitionReason.STEP_BUDGET.value:
         return "fallback_submit"
-
-    # 4. Default: next round.
+    # P3 will add: if reason == TransitionReason.STALL_RECOVERY.value: return "stall_recovery"
     return "continue"

@@ -45,7 +45,7 @@ from src.scene_graph_memory import SceneGraphMemory
 
 from .edges import after_guard, after_memory  # noqa: F401 — re-exported for tests
 from .resources import Resources
-from .state import TwoTierState
+from .state import TwoTierState, TransitionReason
 from .tools import ToolContext
 
 logger = logging.getLogger(__name__)
@@ -757,10 +757,29 @@ def memory_update_node(state: TwoTierState, config) -> dict:
                 token_est=0, duration=0.0,
             )
 
+    # Determine transition reason (P0b: first-class transition state)
+    if rounds_used >= state["max_planner_rounds"]:
+        reason = TransitionReason.ROUND_BUDGET
+    elif exhausted_flag:
+        reason = TransitionReason.EXHAUSTED
+    elif current_step >= state["max_total_steps"]:
+        reason = TransitionReason.STEP_BUDGET
+    else:
+        reason = TransitionReason.CONTINUE
+
+    transition = {
+        "reason": reason.value,
+        "from_node": "memory_update",
+        "to_node": "build_context" if reason == TransitionReason.CONTINUE else "submit",
+        "round_idx": rounds_used,
+    }
+
     return {
         "exhausted_flag": exhausted_flag,
         "steps_taken": current_step,
         "compression_log": compression_log,
+        "last_transition": transition,
+        "transition_log": [transition],
     }
 
 
