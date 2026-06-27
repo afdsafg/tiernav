@@ -5,6 +5,9 @@ results/
 *.xml
 .idea/
 
+# Local env / secrets (API keys, base URLs)
+.env
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
