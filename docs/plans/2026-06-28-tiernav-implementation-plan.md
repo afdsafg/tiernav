@@ -66,9 +66,9 @@ Phase D (Phase 3 extensions — mostly parallel)
 | | A2: Fix GOATBench crash | ✅ done | `47dfe81` | CORRUPTED_SCENES + try/except |
 | | A3: Merge + verify | ✅ done | — | Clean main |
 | **B** | B1: Wire scoring | ✅ done | `f02e9d0` | `scripts/score_aeqa.py` |
-| | B2a: Legacy baseline | 🔄 running | — | Server PID 4727: 6/41, 0 VLM errors, 6/6 success |
-| | B2b: Langgraph baseline | ⏳ pending | — | Waiting for B2a |
-| | B3: GOATBench baseline | ⏳ pending | — | Server eval |
+| | B2a: Legacy baseline | 🔄 running | — | Server 1 PID 4727: 24/41, 0 failed, 100% success |
+| | B2b: Langgraph baseline | 🔄 running | — | Server 2 PID 2150: 6/41 done + 1 caught-crash, verify-nudge working |
+| | B3: GOATBench baseline | ⏳ pending | — | Needs free server |
 | **C** | C0a-C6 (all levers) | ✅ done | `c26ac80`→`d26d2b3` | 8 tasks, 33 tests total |
 | **D** | D1: Claude provider | ✅ done | `42709fd` | Native tool-use + cache_control |
 | | D2: PixelNavigateTool | ✅ done | — | Pixel→backproject stub |
