@@ -90,5 +90,5 @@ scene_graph:
 
 # P0a: layered compression (L_raw → L_compressed → L_index)
 memory:
-  compress_threshold: 5      # L_compressed trigger (rounds)
+  compress_threshold: 1      # L_compressed trigger (1 = always, preserves baseline behavior)
   index_refresh_interval: 3  # L_index trigger (C1)
