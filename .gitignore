@@ -8,6 +8,10 @@ results/
 # Local env / secrets (API keys, base URLs)
 .env
 
+# External reference materials (not part of tiernav source)
+cc-haha/
+claude-code-analysis/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
