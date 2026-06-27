@@ -6,7 +6,7 @@
 
 **Architecture:** Three-phase rollout. Phase A (blocker fixes): repair AEQA + GOATBench result output so `gpt_answer.json`/`path_length_list.pkl`/GOATBench pkls are non-empty and correctly structured. Phase B (baseline固化): run full AEQA-41 + GOATBench 34-episode smoke, wire up 3D-Mem-AEQA-Eval scoring. Phase C (P0-P6 levers): implement Claude Code pattern borrowing with single-variable A/B. Phase D (Phase 3 extensions): Claude provider, PixelNavigate, Critic, LlamaIndex, tech debt.
 
-**Tech Stack:** Python 3.9, LangGraph 0.6.11, habitat-sim, mimo/qwen3-vl-flash VLM API, anthropic SDK (Phase 3), llama-index (Phase 3), conda envs `3dmem` + `langgraph` (bridge .pth).
+**Tech Stack:** Python 3.9 (conda env `3dmem`, has habitat-sim + torch locally for pytest), LangGraph 0.6.11 (conda env `langgraph`, bridged via .pth), qwen3-vl-flash VLM API, anthropic SDK (Phase 3), llama-index (Phase 3).
 
 **Server:** `ssh root@8.149.225.149 -p 58746` (password: `19340db6-8831-4684-aa77-00da1e13675c`). Repo at `/root/tiernav`. Heavy eval runs on server only.
 
@@ -57,6 +57,31 @@ Phase D (Phase 3 extensions — mostly parallel)
 - D4 depends on C1+C4+C5 (LlamaIndex binds to visual memory layers)
 
 **A/B protocol:** every lever (C0a through C6, D1-D5) gets a 10-question dev subset run before/after. One lever per experiment. Log to `docs/experiments/<date>-<lever>.md`.
+
+## Environments
+
+| Env | Python | Where | Purpose |
+|-----|--------|-------|---------|
+| `3dmem` | 3.9 | **Local & Server** | Main conda env: habitat-sim, torch, pytest — all local `pytest` testing, no eval runs |
+| `langgraph` | 3.10 | Server only | LangGraph 0.6.11, separate conda env |
+| bridge `.pth` | — | Server | Links `langgraph` site-packages into `3dmem` |
+
+**Local testing rule:** Use `conda run -n 3dmem python -m pytest` (habitat/torch are in `3dmem`). All `pytest` tests and structural tests run locally. Full eval runs (actual agent inference over scenes) are server-only.
+
+---
+
+## Progress Tracking
+
+| Phase | Task | Status | Commit | Notes |
+|-------|------|--------|--------|-------|
+| **A** | A1: Fix AEQA output | ✅ done | `e170bc8` | 6 files, 4 tests. gpt_answer + path_length for all episodes. |
+| | A2: Fix GOATBench crash | ✅ done | `47dfe81` | 2 files, 3 tests. CORRUPTED_SCENES + try/except. |
+| | A3: Merge + verify | ✅ done | — | Clean main, all tests pass. |
+| **B** | B1: Wire scoring | ⏳ pending | — | `scripts/score_aeqa.py` |
+| | B2: AEQA-41 baseline | ⏳ pending | — | Server eval |
+| | B3: GOATBench baseline | ⏳ pending | — | Server eval |
+| **C** | C0a–C6: Levers | ⏳ pending | — | — |
+| **D** | D1–D5: Phase 3 | ⏳ pending | — | — |
 
 ---
 
@@ -186,7 +211,7 @@ def test_logger_init_tolerates_partial_prior_run():
 
 ```bash
 cd /home/afdsafg/下载/new/tiernav
-python -m pytest tests/test_aeqa_output_format.py -v
+conda run -n 3dmem python -m pytest tests/test_aeqa_output_format.py -v
 ```
 Expected: FAIL — `test_failed_episode_still_records_answer` fails (answer not recorded on failure), `test_logger_init_tolerates_partial_prior_run` fails (assert raises).
 
@@ -358,14 +383,14 @@ With:
 
 ```bash
 cd /home/afdsafg/下载/new/tiernav
-python -m pytest tests/test_aeqa_output_format.py -v
+conda run -n 3dmem python -m pytest tests/test_aeqa_output_format.py -v
 ```
 Expected: PASS (all 4 tests).
 
 ### Step 8: Run existing two_tier_graph tests to verify no regression
 
 ```bash
-python -m pytest tests/test_two_tier_graph.py -v
+conda run -n 3dmem python -m pytest tests/test_two_tier_graph.py -v
 ```
 Expected: PASS (all 18 tests).
 
@@ -453,7 +478,7 @@ def test_corrupted_scene_skip_does_not_crash():
 ### Step 2: Run test to verify it fails
 
 ```bash
-python -m pytest tests/test_goatbench_crash_handling.py -v
+conda run -n 3dmem python -m pytest tests/test_goatbench_crash_handling.py -v
 ```
 Expected: FAIL — `CORRUPTED_SCENES` not defined.
 
@@ -543,7 +568,7 @@ In the subtask loop, after each subtask completes, add:
 ### Step 7: Run test to verify it passes
 
 ```bash
-python -m pytest tests/test_goatbench_crash_handling.py -v
+conda run -n 3dmem python -m pytest tests/test_goatbench_crash_handling.py -v
 ```
 Expected: PASS.
 
@@ -577,7 +602,7 @@ git checkout main
 git merge --no-ff worktree/aeqa-output-fix
 git merge --no-ff worktree/goatbench-crash-fix
 # Run all tests
-python -m pytest tests/ -v
+conda run -n 3dmem python -m pytest tests/ -v
 git push origin main  # sync to server
 ```
 
