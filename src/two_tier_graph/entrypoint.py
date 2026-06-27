@@ -70,6 +70,10 @@ def run_episode_two_tier_langgraph(
     use_active_query = mc.get("use_active_query", True)
     use_rejected_tracking = mc.get("use_rejected_tracking", True)
 
+    # P0a: layered compression config (defaults preserve prior behavior)
+    compress_threshold = mc.get("compress_threshold", 5)
+    index_refresh_interval = mc.get("index_refresh_interval", 3)
+
     os.makedirs(output_dir, exist_ok=True)
 
     logger.info(f"=== Two-Tier (LangGraph) Episode {question_id}: {scene_id} ===")
@@ -215,6 +219,11 @@ def run_episode_two_tier_langgraph(
             "use_scene_graph": use_scene_graph,
             "use_active_query": use_active_query,
             "use_rejected_tracking": use_rejected_tracking,
+            # P0a: layered compression
+            "compress_threshold": compress_threshold,
+            "index_refresh_interval": index_refresh_interval,
+            "l0_index_text": "",
+            "compression_log": [],
             # Mutable per-round (will be set by init_node)
             "pose": {"pts": pts, "angle": float(angle)},
             "rounds_used": 0,

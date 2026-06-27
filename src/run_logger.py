@@ -369,6 +369,17 @@ class RunLogger:
         self._episode_vlm_calls += n
         self.manifest.total_vlm_calls += n
 
+    def log_compression_layer(self, layer: str, round_idx: int, input_count: int,
+                              output_count: int, token_est: int, duration: float):
+        """Record per-layer compression stats for A/B analysis (P0a)."""
+        if not hasattr(self, '_compression_log'):
+            self._compression_log = []
+        self._compression_log.append({
+            "layer": layer, "round": round_idx,
+            "input_count": input_count, "output_count": output_count,
+            "token_est": token_est, "duration": duration,
+        })
+
     def save_graph(self, episode_id: str, graph: dict) -> None:
         """Save the room-view-object scene graph for one episode.
 

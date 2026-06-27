@@ -649,9 +649,15 @@ def memory_update_node(state: TwoTierState, config) -> dict:
     scene graph, marks rejected regions on GD failure, logs trajectory evidence.
     Computes exhausted_flag for the after_memory edge.
 
+    P0a — Layered compression (Meta-pattern 1):
+      L_raw        : round_traces append (done by executor_node); logged here.
+      L_compressed : EvidenceNotebook.update_from_evidence, gated by
+                     compress_threshold; try/except → 'ok'/'failed'/'skipped'.
+      L_index      : stub (C1 will implement); try/except → never blocks.
+
     Reads: last_evidence, current_action, rounds_used, steps_taken,
-           use_scene_graph, use_rejected_tracking.
-    Writes: exhausted_flag, steps_taken (re-synced).
+           use_scene_graph, use_rejected_tracking, compress_threshold.
+    Writes: exhausted_flag, steps_taken (re-synced), compression_log.
     """
     res: Resources = config["configurable"]["resources"]
     evidence: TrajectoryEvidence = state["last_evidence"]
@@ -661,8 +667,35 @@ def memory_update_node(state: TwoTierState, config) -> dict:
     from src.agent_tools import silent_perception_step
     current_step = int(getattr(silent_perception_step, "_step_counter", 0))
 
-    # Notebook update (wraps :1637)
-    res.notebook.update_from_evidence(evidence, step=current_step)
+    import time
+    compression_log = []
+
+    # ── L_raw: round trace already appended by executor_node; record stats ──
+    compression_log.append({
+        "layer": "L_raw", "round": rounds_used,
+        "status": "ok", "input_count": 1, "output_count": 1,
+    })
+
+    # ── L_compressed: notebook update, gated by compress_threshold ──
+    compress_threshold = state.get("compress_threshold", 5)
+    if rounds_used >= compress_threshold:
+        try:
+            res.notebook.update_from_evidence(evidence, step=current_step)
+            compression_log.append({
+                "layer": "L_compressed", "round": rounds_used,
+                "status": "ok", "input_count": 1, "output_count": 1,
+            })
+        except Exception as exc:
+            logger.exception("L_compressed notebook update failed: %s", exc)
+            compression_log.append({
+                "layer": "L_compressed", "round": rounds_used,
+                "status": "failed", "error": str(exc),
+            })
+    else:
+        compression_log.append({
+            "layer": "L_compressed", "round": rounds_used,
+            "status": "skipped", "threshold": compress_threshold,
+        })
 
     # Sync scene graph + record trajectory evidence (wraps :1640-1663)
     if res.scene_graph is not None:
@@ -693,6 +726,20 @@ def memory_update_node(state: TwoTierState, config) -> dict:
             steps_taken=current_step, progress=evidence.progress,
         )
 
+    # ── L_index: stub (C1 will implement); failure must never block ──
+    try:
+        # ponytail: C1 will build L0 index from notebook here.
+        compression_log.append({
+            "layer": "L_index", "round": rounds_used,
+            "status": "stub",
+        })
+    except Exception as exc:
+        logger.exception("L_index failed (fallback to L_compressed): %s", exc)
+        compression_log.append({
+            "layer": "L_index", "round": rounds_used,
+            "status": "failed", "error": str(exc),
+        })
+
     # Compute exhausted_flag (wraps :1665-1672)
     # NOTE: original uses `action.seed_id or ""` — only seeds, not frontiers.
     exhausted_id = action.seed_id or ""
@@ -700,9 +747,20 @@ def memory_update_node(state: TwoTierState, config) -> dict:
     if exhausted_flag:
         logger.info(f"Entity {exhausted_id} exhausted — forcing strategy switch next round.")
 
+    # Per-layer stats to RunLogger (optional, best-effort)
+    if res.run_logger is not None and hasattr(res.run_logger, "log_compression_layer"):
+        for entry in compression_log:
+            res.run_logger.log_compression_layer(
+                layer=entry["layer"], round_idx=rounds_used,
+                input_count=entry.get("input_count", 0),
+                output_count=entry.get("output_count", 0),
+                token_est=0, duration=0.0,
+            )
+
     return {
         "exhausted_flag": exhausted_flag,
         "steps_taken": current_step,
+        "compression_log": compression_log,
     }
 
 

@@ -87,3 +87,8 @@ scene_graph:
   iou_threshold: 0.5
   obj_include_dist: 3.5
   target_obj_iou_threshold: 0.6
+
+# P0a: layered compression (L_raw → L_compressed → L_index)
+memory:
+  compress_threshold: 5      # L_compressed trigger (rounds)
+  index_refresh_interval: 3  # L_index trigger (C1)
