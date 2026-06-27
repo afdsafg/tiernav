@@ -6,7 +6,7 @@
 
 **Architecture:** Three-phase rollout. Phase A (blocker fixes): repair AEQA + GOATBench result output so `gpt_answer.json`/`path_length_list.pkl`/GOATBench pkls are non-empty and correctly structured. Phase B (baseline固化): run full AEQA-41 + GOATBench 34-episode smoke, wire up 3D-Mem-AEQA-Eval scoring. Phase C (P0-P6 levers): implement Claude Code pattern borrowing with single-variable A/B. Phase D (Phase 3 extensions): Claude provider, PixelNavigate, Critic, LlamaIndex, tech debt.
 
-**Tech Stack:** Python 3.9 (conda env `3dmem`, has habitat-sim + torch locally for pytest), LangGraph 0.6.11 (conda env `langgraph`, bridged via .pth), qwen3-vl-flash VLM API, anthropic SDK (Phase 3), llama-index (Phase 3).
+**Tech Stack:** Python 3.9, LangGraph 0.6.11, habitat-sim, mimo/qwen3-vl-flash VLM API, anthropic SDK (Phase 3), llama-index (Phase 3), conda envs `3dmem` + `langgraph` (bridge .pth).
 
 **Server:** `ssh root@8.149.225.149 -p 58746` (password: `19340db6-8831-4684-aa77-00da1e13675c`). Repo at `/root/tiernav`. Heavy eval runs on server only.
 
@@ -58,38 +58,23 @@ Phase D (Phase 3 extensions — mostly parallel)
 
 **A/B protocol:** every lever (C0a through C6, D1-D5) gets a 10-question dev subset run before/after. One lever per experiment. Log to `docs/experiments/<date>-<lever>.md`.
 
-## Environments
-
-| Env | Python | Where | Purpose |
-|-----|--------|-------|---------|
-| `3dmem` | 3.9 | **Local & Server** | Main conda env: habitat-sim, torch, pytest — all local `pytest` testing, no eval runs |
-| `langgraph` | 3.10 | Server only | LangGraph 0.6.11, separate conda env |
-| bridge `.pth` | — | Server | Links `langgraph` site-packages into `3dmem` |
-
-**Local testing rule:** Use `conda run -n 3dmem python -m pytest` (habitat/torch are in `3dmem`). All `pytest` tests and structural tests run locally. Full eval runs (actual agent inference over scenes) are server-only.
-
----
-
 ## Progress Tracking
 
 | Phase | Task | Status | Commit | Notes |
 |-------|------|--------|--------|-------|
-| **A** | A1: Fix AEQA output | ✅ done | `e170bc8` | 6 files, 4 tests. gpt_answer + path_length for all episodes. |
-| | A2: Fix GOATBench crash | ✅ done | `47dfe81` | 2 files, 3 tests. CORRUPTED_SCENES + try/except. |
-| | A3: Merge + verify | ✅ done | — | Clean main, all tests pass. |
+| **A** | A1: Fix AEQA output | ✅ done | `e170bc8` | gpt_answer + path_length for all episodes |
+| | A2: Fix GOATBench crash | ✅ done | `47dfe81` | CORRUPTED_SCENES + try/except |
+| | A3: Merge + verify | ✅ done | — | Clean main |
 | **B** | B1: Wire scoring | ✅ done | `f02e9d0` | `scripts/score_aeqa.py` |
-| | B2a: AEQA-41 legacy baseline | 🔄 running | — | Server: 9/41 done, 36min. Success 2/9. |
-| | B2b: AEQA-41 langgraph baseline | ⏳ pending | — | Waiting for B2a |
+| | B2a: Legacy baseline | 🔄 running | — | Server PID 4727: 6/41, 0 VLM errors, 6/6 success |
+| | B2b: Langgraph baseline | ⏳ pending | — | Waiting for B2a |
 | | B3: GOATBench baseline | ⏳ pending | — | Server eval |
-| **C** | C0a: Layered compression | ✅ done | `c26ac80` | 5 files, 4 tests. L_raw/L_compressed/L_index. |
-| | C0b: transition.reason | ✅ done | `fad12bf` | 4 files, 4 tests. TransitionReason enum. |
-| | C1: Visual memory L0 index | ✅ done | `49cfd8d` | 4 files, 4 tests. VisualMemoryIndex. |
-| | C2: Prompt cache optimization | ✅ done | `457be36` | 3 files, 4 tests. PromptSection registry. |
-| | C3: Stall detection | ✅ done | `36dd3c3` | 6 files, 5 tests. 8 nodes, 4 edges. |
-| | C4: L1 caption store | ✅ done | `656f2b2` | 3 files, 4 tests. CaptionStore disk cache. |
-| | C5: L2 image recall | ✅ done | `2d6552b` | 4 files, 4 tests. ImageRecallStore token budget. |
-| | C6: Fork stub | ✅ done | `d26d2b3` | 3 files, 4 tests. ForkSubagentTool stub. |
-| **D** | D1-D5: Phase 3 | ⏳ pending | — | — |
+| **C** | C0a-C6 (all levers) | ✅ done | `c26ac80`→`d26d2b3` | 8 tasks, 33 tests total |
+| **D** | D1: Claude provider | ✅ done | `42709fd` | Native tool-use + cache_control |
+| | D2: PixelNavigateTool | ✅ done | — | Pixel→backproject stub |
+| | D3: Critic node | ✅ done | `ddd651b` | Planner→critic→executor |
+| | D4: LlamaIndex memory | ✅ done | `3fbcdbe` | SemanticMemoryStore + fallback |
+| | D5: Tech debt cleanup | ✅ done | — | Helper dedup |
 
 ---
 
@@ -219,7 +204,7 @@ def test_logger_init_tolerates_partial_prior_run():
 
 ```bash
 cd /home/afdsafg/下载/new/tiernav
-conda run -n 3dmem python -m pytest tests/test_aeqa_output_format.py -v
+python -m pytest tests/test_aeqa_output_format.py -v
 ```
 Expected: FAIL — `test_failed_episode_still_records_answer` fails (answer not recorded on failure), `test_logger_init_tolerates_partial_prior_run` fails (assert raises).
 
@@ -391,14 +376,14 @@ With:
 
 ```bash
 cd /home/afdsafg/下载/new/tiernav
-conda run -n 3dmem python -m pytest tests/test_aeqa_output_format.py -v
+python -m pytest tests/test_aeqa_output_format.py -v
 ```
 Expected: PASS (all 4 tests).
 
 ### Step 8: Run existing two_tier_graph tests to verify no regression
 
 ```bash
-conda run -n 3dmem python -m pytest tests/test_two_tier_graph.py -v
+python -m pytest tests/test_two_tier_graph.py -v
 ```
 Expected: PASS (all 18 tests).
 
@@ -486,7 +471,7 @@ def test_corrupted_scene_skip_does_not_crash():
 ### Step 2: Run test to verify it fails
 
 ```bash
-conda run -n 3dmem python -m pytest tests/test_goatbench_crash_handling.py -v
+python -m pytest tests/test_goatbench_crash_handling.py -v
 ```
 Expected: FAIL — `CORRUPTED_SCENES` not defined.
 
@@ -576,7 +561,7 @@ In the subtask loop, after each subtask completes, add:
 ### Step 7: Run test to verify it passes
 
 ```bash
-conda run -n 3dmem python -m pytest tests/test_goatbench_crash_handling.py -v
+python -m pytest tests/test_goatbench_crash_handling.py -v
 ```
 Expected: PASS.
 
@@ -610,7 +595,7 @@ git checkout main
 git merge --no-ff worktree/aeqa-output-fix
 git merge --no-ff worktree/goatbench-crash-fix
 # Run all tests
-conda run -n 3dmem python -m pytest tests/ -v
+python -m pytest tests/ -v
 git push origin main  # sync to server
 ```
 
@@ -717,14 +702,9 @@ a single script. Outputs scores.json in result dir."
 
 **Server work.** SSH to server, pull latest, run both engines on full 41 questions.
 
-### Step 1: Sync code to server
+### Step 1: SSH + sync code
 
 ```bash
-# === Local: push latest changes ===
-cd /home/afdsafg/下载/new/tiernav
-git push origin main
-
-# === Server: pull latest + verify ===
 ssh root@8.149.225.149 -p 58746  # password: 19340db6-8831-4684-aa77-00da1e13675c
 cd /root/tiernav
 git pull origin main
@@ -809,22 +789,7 @@ This is accuracy_0 baseline for all subsequent lever A/B."
 
 **Server work.** Run first episode of each of 34 valid scenes (36 - 2 corrupted).
 
-### Step 1: Sync code to server
-
-```bash
-# === Local: push latest changes ===
-cd /home/afdsafg/下载/new/tiernav
-git push origin main
-
-# === Server: pull latest + verify ===
-ssh root@8.149.225.149 -p 58746  # password: 19340db6-8831-4684-aa77-00da1e13675c
-cd /root/tiernav
-git pull origin main
-# Verify env: 3dmem python + langgraph
-/root/miniconda3/envs/3dmem/bin/python -c "import langgraph; print('langgraph OK')"
-```
-
-### Step 2: Run GOATBench with crash monitoring
+### Step 1: Run GOATBench with crash monitoring
 
 ```bash
 ssh root@8.149.225.149 -p 58746
@@ -845,7 +810,7 @@ done
 echo "GOATBench finished. Exit: $?"
 ```
 
-### Step 3: Verify output completeness
+### Step 2: Verify output completeness
 
 ```bash
 ls -la /root/tiernav/results/exp_goatbench/
@@ -862,7 +827,7 @@ cat /root/tiernav/results/exp_goatbench/corrupted_scenes.json
 
 Expected: 34 episodes across 3 task types, 2 scenes in corrupted_scenes.json.
 
-### Step 4: Copy results to local + record
+### Step 3: Copy results to local + record
 
 ```bash
 # Local:
@@ -873,7 +838,7 @@ scp -P 58746 -r root@8.149.225.149:/root/tiernav/results/exp_goatbench/* \
 
 Record to `docs/experiments/2026-06-28-baseline-goatbench.md`. Note: GOATBench is for "agent works normally" check, not primary metric.
 
-### Step 5: Commit
+### Step 4: Commit
 
 ```bash
 git add docs/experiments/2026-06-28-baseline-goatbench.md
