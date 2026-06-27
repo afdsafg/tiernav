@@ -218,17 +218,19 @@ def test_build_llm_provider_defaults_to_mimo():
     assert isinstance(provider, MimoProvider)
 
 
-def test_build_llm_provider_rejects_claude():
-    """Claude provider is not implemented this phase — must raise."""
-    from src.two_tier_graph.providers import build_llm_provider
+def test_build_llm_provider_supports_claude():
+    """Claude provider is implemented (Task D1) — must return ClaudeProvider."""
+    from src.two_tier_graph.providers import ClaudeProvider, build_llm_provider
 
     class FakeLlm:
         provider = "claude"
+        api_key = "test-key"
+        model = "claude-sonnet-4-20250514"
     class FakeCfg:
         llm = FakeLlm()
 
-    with pytest.raises(NotImplementedError):
-        build_llm_provider(FakeCfg(), planner=None)
+    provider = build_llm_provider(FakeCfg(), planner=None)
+    assert isinstance(provider, ClaudeProvider)
 
 
 # ── Graph compilation test ──────────────────────────────────────────────
