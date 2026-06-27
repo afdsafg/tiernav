@@ -828,6 +828,35 @@ def memory_update_node(state: TwoTierState, config) -> dict:
     }
 
 
+def stall_recovery_node(state: TwoTierState, config) -> dict:
+    """Node 8 (P3): stall recovery — inject recovery hint into next round.
+
+    Reads ``stall_signal`` (serialized :class:`StallSignal`), converts the hint
+    to a ``RecoveryNote`` appended to ``round_traces``, and clears the signal
+    so it does not re-trigger on the next ``after_memory`` evaluation.
+
+    Borrows Claude Code's ``transition.reason`` recovery pattern: when the
+    planner is stuck repeating the same action with no progress, surface a
+    hint rather than silently burning another round.
+    """
+    signal = state.get("stall_signal")
+    if not signal:
+        return {}
+
+    hint = signal.get("hint", "Stall detected. Try a different action or object.")
+    recovery_note = {
+        "round_id": state.get("rounds_used", 0),
+        "action": "stall_recovery",
+        "reason": hint,
+        "expected": "different_action",
+    }
+    logger.info("Stall recovery: %s", hint)
+    return {
+        "round_traces": [recovery_note],
+        "stall_signal": None,  # clear — do not re-trigger
+    }
+
+
 def submit_node(state: TwoTierState, config) -> dict:
     """Node 7: terminal answer.
 
@@ -879,6 +908,17 @@ def submit_node(state: TwoTierState, config) -> dict:
         }
 
     # ── Fallback path (wraps :1681-1702) ──
+    # P3: verification nudge — on first fallback entry, give the planner one
+    # more round with a verify hint before committing to a best-guess answer.
+    # Borrows Claude Code's TodoWrite "verify before done" pattern.
+    if not state.get("verification_attempted", False):
+        logger.info("Fallback reached — verify nudge: one more round before final submit.")
+        return {
+            "verification_attempted": True,
+            "terminal": False,  # route back to build_context via after_submit edge
+            "rounds_used": state["rounds_used"],  # unchanged; nudge doesn't consume a round
+        }
+
     logger.info("Budget exhausted — fallback: submit best guess.")
     fallback_action = res.llm_provider.decide(
         question=state["question"],

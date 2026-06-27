@@ -1,19 +1,25 @@
 """build_two_tier_graph — compile the LangGraph StateGraph.
 
-Graph topology (7 nodes, 2 conditional edges):
+Graph topology (8 nodes, 3 conditional edges):
 
     START → init → build_context → planner → loop_guard ──"submit"──→ submit → END
                               ↑                              │
                               │                              └──"execute"──→ executor → memory_update
                               │                                                     │
-                              └───────────"continue"─────────────────────────────────┘
-                                                    (after_memory edge)
-                                                      └──"fallback_submit"──→ submit → END
+                              ├──"continue"──────────────────────────────────────────┘
+                              │   (after_memory edge)
+                              ├──"stall_recovery"──→ stall_recovery ──────────────────┘
+                              │                          (P3: hint injected, retry)
+                              └──"fallback_submit"──→ submit → END
 
 Backtracking (GD-fail → hypothesis_rejected) is data flow through memory, not
 an edge: executor produces TrajectoryEvidence(outcome="detection_failed"),
 memory_update marks room rejected, next build_context excludes it. The graph
 simply loops via "continue".
+
+P3 adds stall_recovery_node (8th node) + stall_recovery route. When
+memory_update detects repeated-action-no-progress, after_memory routes to
+stall_recovery which injects a hint, then loops back to build_context.
 """
 from __future__ import annotations
 
@@ -21,7 +27,7 @@ from typing import Callable
 
 from langgraph.graph import END, START, StateGraph
 
-from .edges import after_guard, after_memory
+from .edges import after_guard, after_memory, after_submit
 from .nodes import (
     build_context_node,
     executor_node,
@@ -29,6 +35,7 @@ from .nodes import (
     loop_guard_node,
     memory_update_node,
     planner_node,
+    stall_recovery_node,
     submit_node,
 )
 from .state import TwoTierState
@@ -47,13 +54,14 @@ def build_two_tier_graph():
     """
     g: StateGraph = StateGraph(TwoTierState)
 
-    # ── Add 7 nodes ──
+    # ── Add 8 nodes ──
     g.add_node("init", init_node)
     g.add_node("build_context", build_context_node)
     g.add_node("planner", planner_node)
     g.add_node("loop_guard", loop_guard_node)
     g.add_node("executor", executor_node)
     g.add_node("memory_update", memory_update_node)
+    g.add_node("stall_recovery", stall_recovery_node)  # P3
     g.add_node("submit", submit_node)
 
     # ── Static edges ──
@@ -62,7 +70,19 @@ def build_two_tier_graph():
     g.add_edge("build_context", "planner")
     g.add_edge("planner", "loop_guard")
     g.add_edge("executor", "memory_update")
-    g.add_edge("submit", END)
+    g.add_edge("stall_recovery", "build_context")  # P3: hint injected, retry
+
+    # ── Conditional edge: after_submit (leaves submit_node) ──
+    # P3 verification nudge: on first fallback entry, route back to
+    # build_context for one more round; on second entry, commit to END.
+    g.add_conditional_edges(
+        "submit",
+        after_submit,
+        {
+            "verify": "build_context",
+            "end": END,
+        },
+    )
 
     # ── Conditional edge: after_guard (leaves loop_guard) ──
     # "submit" → submit_node (action is submit_answer, wraps :1614)
@@ -78,15 +98,17 @@ def build_two_tier_graph():
 
     # ── Conditional edge: after_memory (leaves memory_update) ──
     # "continue" → build_context (next round, back edge — the main loop)
+    # "stall_recovery" → stall_recovery_node (P3: repeated-action-no-progress)
     # "fallback_submit" → submit_node (budget exhausted, wraps :1681)
     #
-    # CRITICAL: the ordering in after_memory (round-budget → exhausted →
+    # CRITICAL: the ordering in after_memory (stall → round-budget → exhausted →
     # step-budget) must be preserved to reproduce the :1665-1677 skip semantics.
     g.add_conditional_edges(
         "memory_update",
         after_memory,
         {
             "continue": "build_context",
+            "stall_recovery": "stall_recovery",  # P3
             "fallback_submit": "submit",
         },
     )

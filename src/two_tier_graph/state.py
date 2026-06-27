@@ -95,6 +95,10 @@ class TwoTierState(TypedDict):
     last_transition: Optional[dict]               # Transition as dict (serializable)
     transition_log: Annotated[list, operator.add]  # accumulates per-round
 
+    # ── Stall detection (P3) ──
+    stall_signal: Optional[dict]               # serialized StallSignal
+    verification_attempted: bool               # P3 verify nudge flag
+
     # ── Per-round prompt/context artifacts (last-writer-wins) ──
     scene_analysis: str
     history_text: str

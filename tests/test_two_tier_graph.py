@@ -234,14 +234,18 @@ def test_build_llm_provider_rejects_claude():
 # ── Graph compilation test ──────────────────────────────────────────────
 
 
-def test_graph_compiles_with_7_nodes():
-    """build_two_tier_graph() returns a compiled graph with all 7 user nodes."""
+def test_graph_compiles_with_8_nodes():
+    """build_two_tier_graph() returns a compiled graph with all 8 user nodes.
+
+    P3 raised node count 7→8 (added stall_recovery).
+    """
     from src.two_tier_graph.graph import build_two_tier_graph
 
     graph = build_two_tier_graph()
     node_names = set(graph.nodes.keys())
     expected = {"init", "build_context", "planner",
-                "loop_guard", "executor", "memory_update", "submit"}
+                "loop_guard", "executor", "memory_update",
+                "stall_recovery", "submit"}
     missing = expected - node_names
     assert not missing, f"missing nodes: {missing}"
     # __start__ is always present; __end__ may or may not appear in graph.nodes

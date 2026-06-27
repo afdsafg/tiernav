@@ -41,8 +41,13 @@ def after_memory(state: dict) -> str:
     Reads last_transition (written by memory_update_node) to determine routing.
     P0b: previously recomputed logic inline; now reads from state for testability.
 
+    P3: stall_signal (if present) takes priority over all other routes —
+    recovery hint must be injected before another wasted round.
+
     Order still matters (preserved from agent_workflow.py:1665-1677):
 
+      - Stall signal (P3) → stall_recovery. Checked FIRST so a stalled agent
+        gets a recovery hint before budget is consumed.
       - Round-budget (for-loop end, `:1442` range exhausted) → fallback_submit.
         Checked FIRST because the for-loop is outermost. When rounds_used
         reaches max_planner_rounds, the for-loop exits to the fallback at :1681.
@@ -52,6 +57,10 @@ def after_memory(state: dict) -> str:
       - Step-budget (`:1675-1677` `break`) → fallback_submit.
       - Otherwise → continue (next round).
     """
+    # P3: stall recovery takes priority
+    if state.get("stall_signal"):
+        return "stall_recovery"
+
     transition = state.get("last_transition", {})
     reason = transition.get("reason", "continue")
 
@@ -61,5 +70,23 @@ def after_memory(state: dict) -> str:
         return "continue"  # skip step-budget
     if reason == TransitionReason.STEP_BUDGET.value:
         return "fallback_submit"
-    # P3 will add: if reason == TransitionReason.STALL_RECOVERY.value: return "stall_recovery"
     return "continue"
+
+
+def after_submit(state: dict) -> str:
+    """Conditional edge leaving submit_node (P3: verification nudge).
+
+    Normally submit_node is terminal (→ END). P3 adds one verification round
+    before the fallback answer is committed: on first fallback entry the node
+    flips ``verification_attempted`` and returns a non-terminal state; this
+    edge then routes back to ``build_context`` for one more planner round with
+    a verify hint. On the second entry (``verification_attempted`` already
+    True) the node commits the answer and this edge routes to END.
+
+    Returns:
+        "verify" → build_context (one more round)
+        "end"    → END (commit answer)
+    """
+    if state.get("terminal", True) is False:
+        return "verify"
+    return "end"
