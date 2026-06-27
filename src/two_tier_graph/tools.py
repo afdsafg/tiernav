@@ -69,6 +69,10 @@ class ToolRegistry:
         tool = self.get(action.action_type)
         return tool.run(action, ctx)
 
+    @property
+    def tools(self) -> list[ActionTool]:
+        return list(self._tools.values())
+
     def actions_prompt_text(self) -> str:
         """Concatenate each tool's prompt_description.
 
@@ -182,4 +186,6 @@ def build_default_tool_registry() -> ToolRegistry:
     registry.register(ExploreSeedTool())
     registry.register(ExploreFrontierTool())
     registry.register(SubmitAnswerTool())
+    from src.two_tier_graph.fork import ForkSubagentTool  # lazy: avoids circular import
+    registry.register(ForkSubagentTool())
     return registry
