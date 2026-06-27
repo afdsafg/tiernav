@@ -36,7 +36,16 @@ from omegaconf import OmegaConf
 from ultralytics import SAM, YOLOWorld
 
 from src.agent_workflow import run_episode_two_tier
+from src.two_tier_graph.entrypoint import run_episode_two_tier_langgraph
 from src.const import INVALID_SCENE_ID
+
+# Engine selector — "legacy" uses the hand-rolled Two-Tier loop; "langgraph"
+# uses the LangGraph state-machine port (behavior-preserving, see
+# /home/afdsafg/.codebuddy/plans/swift-forging-newton.md).
+_ENGINES = {
+    "legacy": run_episode_two_tier,
+    "langgraph": run_episode_two_tier_langgraph,
+}
 from src.logger_aeqa import Logger
 from src.utils import get_pts_angle_aeqa
 
@@ -240,6 +249,7 @@ def main(
     method_name: str = "ours_full",
     method_config: Optional[dict] = None,
     run_logger: Optional["RunLogger"] = None,
+    engine: str = "legacy",
 ):
     split_name = f"{start_ratio:.2f}_{end_ratio:.2f}"
     _setup_logging(cfg.output_dir, start_ratio, end_ratio)
@@ -308,7 +318,9 @@ def main(
         )
 
         try:
-            result = run_episode_two_tier(
+            run_episode_fn = _ENGINES.get(engine, run_episode_two_tier)
+            logging.info("Using engine: %s", engine)
+            result = run_episode_fn(
                 scene_id=scene_id,
                 question=question,
                 question_id=question_id,
@@ -464,6 +476,7 @@ def _worker_entry(
     questions_path: Optional[str],
     method_name: str = "ours_full",
     method_config: Optional[dict] = None,
+    engine: str = "legacy",
 ) -> None:
     cfg = _load_cfg(cfg_file, exp_suffix=exp_suffix, questions_path=questions_path)
     # Build a RunLogger per worker (writes to the run's output_dir)
@@ -494,6 +507,7 @@ def _worker_entry(
             method_name=method_name,
             method_config=method_config,
             run_logger=rl,
+            engine=engine,
         )
     finally:
         rl.close()
@@ -517,6 +531,7 @@ def _run_parallel_splits(args) -> int:
                 args.questions_path,
                 args.method,
                 method_config,
+                args.engine,
             ),
         )
         process.start()
@@ -597,6 +612,15 @@ def parse_args():
              "D4_rejected_tracking, ours_full, A1_wo_notebook, A3_wo_room_seg, "
              "A4_wo_graph, A5_wo_active_query, A6_wo_rejected.",
     )
+    parser.add_argument(
+        "--engine",
+        default="legacy",
+        type=str,
+        choices=list(_ENGINES.keys()),
+        help="Agent runtime engine. 'legacy' = hand-rolled Two-Tier loop "
+             "(agent_workflow.py:1087); 'langgraph' = LangGraph state-machine "
+             "port (two_tier_graph/). Default: legacy.",
+    )
     return parser.parse_args()
 
 
@@ -639,6 +663,7 @@ if __name__ == "__main__":
                 method_name=args.method,
                 method_config=method_config,
                 run_logger=rl,
+                engine=args.engine,
             )
         finally:
             rl.close()
