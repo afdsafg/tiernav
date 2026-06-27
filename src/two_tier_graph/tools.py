@@ -174,6 +174,46 @@ class SubmitAnswerTool(ActionTool):
         )
 
 
+class PixelNavigateTool(ActionTool):
+    """Navigate to a pixel coordinate on the topdown map.
+
+    Planner outputs pixel coords; tool backprojects to world coord, navigates.
+    Phase 1 stub: backproject not wired (TODO tsdf_planner), returns a
+    TrajectoryEvidence logging the requested pixel. No graph edit —
+    registered via ToolRegistry, dispatched like other tools.
+    """
+
+    def schema(self) -> ToolSchema:
+        return ToolSchema(
+            name="pixel_navigate",
+            arg_fields=[("pixel_x", "int"), ("pixel_y", "int")],
+            prompt_description=(
+                '5. pixel_navigate: {"reasoning":"why","expected":"what verify",'
+                '"action":"pixel_navigate","arguments":{"pixel_x":<int>,'
+                '"pixel_y":<int>}} — navigate to a pixel on the topdown map'
+            ),
+            is_terminal=False,
+        )
+
+    def run(self, action, ctx: "ToolContext") -> TrajectoryEvidence:
+        pixel_x = getattr(action, "pixel_x", None)
+        pixel_y = getattr(action, "pixel_y", None)
+        # TODO(phase 2): backproject (pixel_x, pixel_y) → world (x, y) via
+        # ctx.executor.tsdf topdown map (resolution + origin), then call
+        # ctx.executor.navigate_to_point(world_x, world_y). For now stub.
+        logger = __import__("logging").getLogger(__name__)
+        logger.info("pixel_navigate stub: pixel=(%s, %s)", pixel_x, pixel_y)
+        return TrajectoryEvidence(
+            subgoal=f"Pixel navigate to ({pixel_x}, {pixel_y})",
+            task_mode="pixel_navigate",
+            progress=f"pixel_navigate to ({pixel_x}, {pixel_y}) — backproject stub",
+            salient=[],
+            outcome="pixel_navigate_stub",
+            room_id=-1,
+            objects_nearby=[],
+        )
+
+
 def build_default_tool_registry() -> ToolRegistry:
     """Build a ToolRegistry pre-populated with the 5 default tools.
 
@@ -188,4 +228,5 @@ def build_default_tool_registry() -> ToolRegistry:
     registry.register(SubmitAnswerTool())
     from src.two_tier_graph.fork import ForkSubagentTool  # lazy: avoids circular import
     registry.register(ForkSubagentTool())
+    registry.register(PixelNavigateTool())
     return registry
