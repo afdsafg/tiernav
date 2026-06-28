@@ -41,3 +41,7 @@ class Resources:
     question_id: str = ""
     question: str = ""
     output_dir: str = ""
+
+    # ── GOATBench 任务上下文（AEQA 路径为 None）──
+    goal_type: Optional[str] = None          # "object"|"description"|"image"|None
+    goal_metadata: Optional[dict] = None     # {"goal_description": str, ...}（不含真值位置）
