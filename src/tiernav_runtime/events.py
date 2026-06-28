@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Annotated
 
 from pydantic import Field
 
 from .contracts import JsonObject, RuntimeModel, SCHEMA_VERSION
+
+
+PositiveSequence = Annotated[int, Field(strict=True, gt=0)]
 
 
 class EpisodeEvent(RuntimeModel):
@@ -14,7 +18,7 @@ class EpisodeEvent(RuntimeModel):
     schema_version: str = SCHEMA_VERSION
     episode_id: str
     event_type: str
-    sequence: int
+    sequence: PositiveSequence
     timestamp_utc: str
     payload: JsonObject = Field(default_factory=dict)
 

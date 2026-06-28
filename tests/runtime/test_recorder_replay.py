@@ -34,6 +34,12 @@ def test_make_event_has_schema_version_and_sequence():
     assert event.event_type == "episode_started"
 
 
+@pytest.mark.parametrize("bad_sequence", [0, -1, "1", True])
+def test_make_event_rejects_invalid_sequences(bad_sequence):
+    with pytest.raises(ValidationError):
+        make_event("ep-1", "episode_started", bad_sequence, {"scene_id": "scene"})
+
+
 def test_make_event_rejects_arbitrary_python_objects():
     with pytest.raises(ValidationError):
         make_event("ep-1", "episode_started", 1, {"obj": object()})
@@ -133,6 +139,52 @@ def test_replay_rejects_out_of_order_sequences(tmp_path):
         raise AssertionError("replay accepted out-of-order events")
 
 
+def test_replay_rejects_duplicate_sequences(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        "\n".join([
+            make_event("ep-1", "episode_started", 1, {"scene_id": "scene"}).model_dump_json(),
+            make_event("ep-1", "episode_ended", 1, {"success": True}).model_dump_json(),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises((ValueError, ValidationError)) as exc:
+        replay_events(path)
+
+    assert "sequence" in str(exc.value)
+
+
+def test_replay_rejects_mixed_episode_ids(tmp_path):
+    path = tmp_path / "events.jsonl"
+    req = _request()
+    path.write_text(
+        "\n".join([
+            make_event("ep-1", "episode_started", 1, {"request": req.model_dump(mode="json")}).model_dump_json(),
+            make_event("ep-2", "episode_ended", 2, {"success": True, "answer": "mug"}).model_dump_json(),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises((ValueError, ValidationError)) as exc:
+        replay_events(path)
+
+    assert "episode_id" in str(exc.value)
+
+
+def test_replay_rejects_invalid_request_payload(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        make_event("ep-1", "episode_started", 1, {"request": {}}).model_dump_json() + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        replay_events(path)
+
+    assert "episode_id" in str(exc.value)
+
+
 def test_replay_rejects_string_success_in_terminal_payload(tmp_path):
     path = tmp_path / "events.jsonl"
     path.write_text(
@@ -149,6 +201,22 @@ def test_replay_rejects_string_success_in_terminal_payload(tmp_path):
     assert "success" in str(exc.value)
 
 
+def test_replay_rejects_non_string_answer_in_terminal_payload(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        "\n".join([
+            make_event("ep-1", "episode_started", 1, {"scene_id": "scene"}).model_dump_json(),
+            make_event("ep-1", "episode_ended", 2, {"success": True, "answer": 7}).model_dump_json(),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises((ValueError, ValidationError)) as exc:
+        replay_events(path)
+
+    assert "answer" in str(exc.value)
+
+
 def test_replay_rejects_string_step_index(tmp_path):
     path = tmp_path / "events.jsonl"
     path.write_text(
@@ -163,3 +231,32 @@ def test_replay_rejects_string_step_index(tmp_path):
         replay_events(path)
 
     assert "step_index" in str(exc.value)
+
+
+def test_replay_rejects_non_string_failure_type(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        "\n".join([
+            make_event("ep-1", "episode_started", 1, {"scene_id": "scene"}).model_dump_json(),
+            make_event("ep-1", "policy_transitioned", 2, {"failure_type": 5}).model_dump_json(),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises((ValueError, ValidationError)) as exc:
+        replay_events(path)
+
+    assert "failure_type" in str(exc.value)
+
+
+def test_replay_rejects_non_string_legacy_start_fields(tmp_path):
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        make_event("ep-1", "episode_started", 1, {"scene_id": 3}).model_dump_json() + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises((ValueError, ValidationError)) as exc:
+        replay_events(path)
+
+    assert "scene_id" in str(exc.value)
