@@ -368,7 +368,7 @@ def main(
         )
 
         episode_payload = {
-            **result,
+        **{k: v for k, v in result.items() if not k.startswith("_")},
             "ground_truth_answer": gt_answer,
             "category": question_data.get("category"),
             "class": question_data.get("class"),
