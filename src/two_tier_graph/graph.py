@@ -1,16 +1,19 @@
 """build_two_tier_graph — compile the LangGraph StateGraph.
 
-Graph topology (8 nodes, 3 conditional edges):
+Graph topology (10 nodes, 4 conditional edges):
 
-    START → init → build_context → planner → loop_guard ──"submit"──→ submit → END
-                              ↑                              │
-                              │                              └──"execute"──→ executor → memory_update
-                              │                                                     │
-                              ├──"continue"──────────────────────────────────────────┘
-                              │   (after_memory edge)
-                              ├──"stall_recovery"──→ stall_recovery ──────────────────┘
-                              │                          (P3: hint injected, retry)
-                              └──"fallback_submit"──→ submit → END
+ START → note → init → build_context → planner → critic → loop_guard ──"submit"──→ submit → END
+  ↑                                      │
+  │                                      └──"execute"──→ executor → check_arrival
+  │                                                        │
+  │                                                        ├──"submit"──────────→ submit
+  │                                                        └──"memory_update"──┘
+  │                                                                              │
+  ├──"continue"────────────────────────────────────────────────────────────────┘
+  │ (after_memory edge)
+  ├──"stall_recovery"──→ stall_recovery ──────────────────────────────────────┘
+  │ (P3: hint injected, retry)
+  └──"fallback_submit"──→ submit →
 
 Backtracking (GD-fail → hypothesis_rejected) is data flow through memory, not
 an edge: executor produces TrajectoryEvidence(outcome="detection_failed"),

@@ -282,7 +282,7 @@ def note_node(state: TwoTierState, config) -> dict:
     Phase-1 确定性分类器，不调 LLM。未来 lever：LLM 拆解（Phase C/D）。
 
     Reads: question, cross_subtask_notes (从 resources 读 goal_type)。
-    Writes: task_type, task_plan, is_terminal_task, subtask_index, subtask_total。
+    Writes: task_type, task_plan, is_terminal_task。
     """
     res: Resources = config["configurable"]["resources"]
     goal_type = res.goal_type
@@ -294,8 +294,6 @@ def note_node(state: TwoTierState, config) -> dict:
             "task_type": "question",
             "task_plan": f"Explore scene, gather evidence, answer: {state['question']}",
             "is_terminal_task": False,
-            "subtask_index": 0,
-            "subtask_total": 1,
         }
 
     # GOATBench 路径
@@ -314,8 +312,6 @@ def note_node(state: TwoTierState, config) -> dict:
         "task_type": task_type,
         "task_plan": f"Navigate to {goal_type} target: {state['question']}{prior_summary}",
         "is_terminal_task": True,
-        "subtask_index": state.get("subtask_index", 0),
-        "subtask_total": state.get("subtask_total", 1),
     }
 
 
