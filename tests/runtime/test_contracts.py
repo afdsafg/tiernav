@@ -406,6 +406,39 @@ def test_episode_result_rejects_negative_path_length():
         raise AssertionError("EpisodeResult accepted negative path_length")
 
 
+@pytest.mark.parametrize("invalid_path_length", [float("inf"), float("nan")])
+def test_episode_result_rejects_non_finite_path_length(invalid_path_length):
+    try:
+        EpisodeResult(
+            episode_id="ep-1",
+            scene_id="scene",
+            task_name="aeqa",
+            task_mode="question_answering",
+            success=True,
+            path_length=invalid_path_length,
+        )
+    except ValidationError as exc:
+        assert "path_length" in str(exc)
+    else:
+        raise AssertionError("EpisodeResult accepted a non-finite path_length")
+
+
+def test_episode_result_serializes_finite_path_length_as_json_number():
+    result = EpisodeResult(
+        episode_id="ep-1",
+        scene_id="scene",
+        task_name="aeqa",
+        task_mode="question_answering",
+        success=True,
+        path_length=3.5,
+    )
+
+    payload = json.loads(result.model_dump_json())
+
+    assert payload["path_length"] == 3.5
+    assert payload["path_length"] is not None
+
+
 def test_observation_rejects_unknown_nested_fields():
     try:
         Observation(summary="Seen chair", unknown_nested_field="x")

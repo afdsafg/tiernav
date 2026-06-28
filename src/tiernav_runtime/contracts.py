@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, field
 SCHEMA_VERSION = "tiernav.runtime.v1"
 SchemaVersion = Literal["tiernav.runtime.v1"]
 NonNegativeInt = Annotated[StrictInt, Field(ge=0)]
-NonNegativeFloat = Annotated[StrictFloat, Field(ge=0.0)]
+NonNegativeFloat = Annotated[StrictFloat, Field(ge=0.0, allow_inf_nan=False)]
 FiniteFloat = Annotated[StrictFloat, Field(allow_inf_nan=False)]
 PoseValues = dict[str, FiniteFloat]
 MetricsMap = dict[str, FiniteFloat]
