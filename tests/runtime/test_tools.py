@@ -110,7 +110,7 @@ def test_registry_names_sorted():
 
 
 def test_registry_action_schema_text_stable_and_includes_names():
-    reg = with_stable_defaults()
+    reg = ToolRegistry.with_stable_defaults()
     text_a = reg.action_schema_text()
     text_b = reg.action_schema_text()
     assert text_a == text_b
@@ -162,7 +162,7 @@ def test_submit_answer_missing_answer():
     ],
 )
 def test_default_navigation_tools_dispatch_without_error(action_type):
-    reg = with_stable_defaults()
+    reg = ToolRegistry.with_stable_defaults()
     call = ToolCall(call_id=f"c_{action_type}", action_type=action_type, arguments={})
     result = reg.dispatch(call)
     assert result.ok is True
@@ -171,11 +171,33 @@ def test_default_navigation_tools_dispatch_without_error(action_type):
 
 
 def test_default_registry_has_no_fork_or_pixel():
-    reg = with_stable_defaults()
+    reg = ToolRegistry.with_stable_defaults()
     names = reg.names()
     assert "fork_subagent" not in names
     assert "pixel_navigate" not in names
     assert "submit_answer" in names
+
+
+def test_with_stable_defaults_names_exact():
+    assert ToolRegistry.with_stable_defaults().names() == [
+        "explore_frontier",
+        "explore_panorama",
+        "explore_seed",
+        "navigate_to_object",
+        "submit_answer",
+    ]
+
+
+def test_runtime_tool_is_abstract():
+    with pytest.raises(TypeError):
+        RuntimeTool()
+
+
+def test_module_level_with_stable_defaults_alias():
+    # Backward-compatible alias still works.
+    reg = with_stable_defaults()
+    assert isinstance(reg, ToolRegistry)
+    assert "submit_answer" in reg.names()
 
 
 def test_noop_navigation_reports_target_and_path_length():

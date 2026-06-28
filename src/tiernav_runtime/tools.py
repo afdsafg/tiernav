@@ -5,12 +5,13 @@ invoke in tests and replay.
 """
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from typing import ClassVar
 
 from .contracts import Observation, ToolCall, ToolResult
 
 
-class RuntimeTool:
+class RuntimeTool(ABC):
     """Abstract base for runtime tools.
 
     Subclasses set ``name`` and optionally ``terminal``, and implement
@@ -21,6 +22,7 @@ class RuntimeTool:
     name: ClassVar[str] = ""
     terminal: ClassVar[bool] = False
 
+    @abstractmethod
     def run(self, call: ToolCall) -> ToolResult:  # pragma: no cover - abstract
         raise NotImplementedError
 
@@ -110,6 +112,24 @@ class ToolRegistry:
             lines.append(f"- {name}: terminal={tool.terminal}")
         return "\n".join(lines)
 
+    @classmethod
+    def with_stable_defaults(cls) -> "ToolRegistry":
+        """Return a registry with the stable default tool set.
+
+        Registers the four navigation actions (backed by NoopNavigationTool) and
+        submit_answer. Does not register fork_subagent or pixel_navigate, and
+        contains no stubs that raise NotImplementedError.
+        """
+        registry = cls()
+        for action_type in _DEFAULT_NAVIGATION_ACTIONS:
+            # Register a distinct tool instance per action_type so name lookups
+            # resolve to the dispatched action. We override name per instance.
+            tool = NoopNavigationTool()
+            tool.name = action_type  # type: ignore[misc]
+            registry.register(tool)
+        registry.register(SubmitAnswerTool())
+        return registry
+
 
 _DEFAULT_NAVIGATION_ACTIONS = (
     "explore_panorama",
@@ -120,19 +140,5 @@ _DEFAULT_NAVIGATION_ACTIONS = (
 
 
 def with_stable_defaults() -> ToolRegistry:
-    """Return a registry with the stable default tool set.
-
-    Registers the four navigation actions (backed by NoopNavigationTool) and
-    submit_answer. Does not register fork_subagent or pixel_navigate, and
-    contains no stubs that raise NotImplementedError.
-    """
-    registry = ToolRegistry()
-    noop = NoopNavigationTool()
-    for action_type in _DEFAULT_NAVIGATION_ACTIONS:
-        # Register a distinct tool instance per action_type so name lookups
-        # resolve to the dispatched action. We override name per instance.
-        tool = NoopNavigationTool()
-        tool.name = action_type  # type: ignore[misc]
-        registry.register(tool)
-    registry.register(SubmitAnswerTool())
-    return registry
+    """Backward-compatible alias for :meth:`ToolRegistry.with_stable_defaults`."""
+    return ToolRegistry.with_stable_defaults()
