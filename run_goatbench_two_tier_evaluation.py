@@ -164,9 +164,17 @@ def run_goatbench_two_tier(
         )
 
         try:
-            # goal_metadata: 描述文本（非真值位置；真值 viewpoints 仅用于事后评分）
+            # goal_description: 仅人类可读描述，绝不含真值坐标
+            if goal_type == "object":
+                goal_desc = subtask_metadata.get("class", "")
+            elif goal_type == "description" and isinstance(subtask_goal, list) and len(subtask_goal) > 0:
+                goal_desc = subtask_goal[0].get("lang_desc", "") if isinstance(subtask_goal[0], dict) else str(subtask_goal[0])
+            elif goal_type == "description":
+                goal_desc = str(subtask_goal)
+            else:
+                goal_desc = ""  # image goal: no text description
             goal_metadata = {
-                "goal_description": subtask_goal if isinstance(subtask_goal, str) else str(subtask_goal),
+                "goal_description": goal_desc,
                 "goal_type": goal_type,
             }
 
