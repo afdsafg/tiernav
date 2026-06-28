@@ -298,3 +298,31 @@ def test_content_hash_empty_string_for_empty_content():
     for s in sections:
         if s.content == "":
             assert s.content_hash == ""
+
+
+def test_compile_rejects_non_str_action_schema():
+    """Non-str action_schema must raise TypeError at the compile entry point,
+    not leak as an AttributeError from _estimate_tokens internals."""
+    state = _state_with_memory()
+    compiler = ContextCompiler()
+
+    with pytest.raises(TypeError) as excinfo:
+        compiler.compile(state, action_schema=123)
+
+    msg = str(excinfo.value)
+    assert "action_schema" in msg
+    assert "str" in msg
+
+
+def test_compile_rejects_non_str_policy_hint():
+    """Non-str policy_hint must raise TypeError at the compile entry point,
+    not leak as an AttributeError from _estimate_tokens internals."""
+    state = _state_with_memory()
+    compiler = ContextCompiler()
+
+    with pytest.raises(TypeError) as excinfo:
+        compiler.compile(state, action_schema=SCHEMA, policy_hint=123)
+
+    msg = str(excinfo.value)
+    assert "policy_hint" in msg
+    assert "str" in msg

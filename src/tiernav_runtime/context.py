@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from src.tiernav_runtime.contracts import ContextSection, EpisodeState
+from .contracts import ContextSection, EpisodeState
 
 
 def _hash(content: str) -> str:
@@ -96,6 +96,16 @@ class ContextCompiler:
         include_memory: bool = True,
         policy_hint: str = "",
     ) -> list[ContextSection]:
+        if not isinstance(action_schema, str):
+            raise TypeError(
+                f"action_schema must be str, got {type(action_schema).__name__}: "
+                f"{action_schema!r}"
+            )
+        if not isinstance(policy_hint, str):
+            raise TypeError(
+                f"policy_hint must be str, got {type(policy_hint).__name__}: "
+                f"{policy_hint!r}"
+            )
         task_instruction = self._render_task_instruction(state)
         memory_text = self._render_memory(state, include_memory)
         recent_trace = self._render_recent_trace(state)
