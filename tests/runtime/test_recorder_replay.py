@@ -34,6 +34,18 @@ def test_make_event_has_schema_version_and_sequence():
     assert event.event_type == "episode_started"
 
 
+def test_episode_event_rejects_wrong_schema_version():
+    with pytest.raises(ValidationError):
+        EpisodeEvent(
+            schema_version="wrong.version",
+            episode_id="ep-1",
+            event_type="episode_started",
+            sequence=1,
+            timestamp_utc="2026-01-01T00:00:00+00:00",
+            payload={},
+        )
+
+
 @pytest.mark.parametrize("bad_sequence", [0, -1, "1", True])
 def test_make_event_rejects_invalid_sequences(bad_sequence):
     with pytest.raises(ValidationError):
@@ -212,6 +224,23 @@ def test_replay_rejects_repeated_start_for_same_episode(tmp_path):
         replay_events(path)
 
     assert "episode_started" in str(exc.value)
+
+
+def test_replay_rejects_unsupported_event_type(tmp_path):
+    path = tmp_path / "events.jsonl"
+    req = _request()
+    path.write_text(
+        "\n".join([
+            make_event("ep-1", "episode_started", 1, {"request": req.model_dump(mode="json")}).model_dump_json(),
+            make_event("ep-1", "teleported", 2, {}).model_dump_json(),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises((ValueError, ValidationError)) as exc:
+        replay_events(path)
+
+    assert "event_type" in str(exc.value) or "teleported" in str(exc.value)
 
 
 def test_replay_rejects_invalid_request_payload(tmp_path):

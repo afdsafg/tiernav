@@ -6,7 +6,7 @@ from typing import Annotated
 
 from pydantic import Field
 
-from .contracts import JsonObject, RuntimeModel, SCHEMA_VERSION
+from .contracts import JsonObject, RuntimeModel, SCHEMA_VERSION, SchemaVersion
 
 
 PositiveSequence = Annotated[int, Field(strict=True, gt=0)]
@@ -15,7 +15,7 @@ PositiveSequence = Annotated[int, Field(strict=True, gt=0)]
 class EpisodeEvent(RuntimeModel):
     """One append-only event in an episode log."""
 
-    schema_version: str = SCHEMA_VERSION
+    schema_version: SchemaVersion = SCHEMA_VERSION
     episode_id: str
     event_type: str
     sequence: PositiveSequence

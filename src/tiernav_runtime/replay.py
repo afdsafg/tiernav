@@ -122,6 +122,8 @@ def replay_events(path: str | Path) -> EpisodeState:
                 state.answer = _optional_str(event.payload, "answer", "")
                 state.round_index = _optional_non_negative_int(event.payload, "round_index", state.round_index)
                 state.step_index = _optional_non_negative_int(event.payload, "step_index", state.step_index)
+            else:
+                raise ValueError(f"unsupported event_type: {event.event_type}")
 
     if state is None:
         raise ValueError("event log did not contain episode_started")
