@@ -148,6 +148,22 @@ def test_tool_contracts_validate_terminal_results():
     assert result.observation.summary == "Answer submitted."
 
 
+def test_tool_result_rejects_unknown_nested_observation_fields():
+    try:
+        ToolResult(
+            call_id="tool-1",
+            action_type="submit_answer",
+            ok=True,
+            observation={"summary": "Answer submitted.", "unexpected": "bad"},
+        )
+    except ValidationError as exc:
+        message = str(exc)
+        assert "observation" in message
+        assert "unexpected" in message
+    else:
+        raise AssertionError("ToolResult accepted an unexpected nested observation field")
+
+
 def test_episode_result_has_common_metrics_for_aeqa_and_goatbench():
     result = EpisodeResult(
         episode_id="ep-1",
@@ -178,10 +194,18 @@ def test_observation_rejects_unknown_nested_fields():
 def test_json_schema_dump_contains_all_public_models():
     schemas = dump_runtime_json_schemas()
 
-    assert "RunSpec" in schemas
-    assert "EpisodeRequest" in schemas
-    assert "EpisodeState" in schemas
-    assert "EpisodeResult" in schemas
+    assert set(schemas) == {
+        "RunSpec",
+        "EpisodeRequest",
+        "EpisodeState",
+        "EpisodeResult",
+        "PlannerDecision",
+        "ToolCall",
+        "ToolResult",
+        "Observation",
+        "MemoryPack",
+        "ContextSection",
+    }
     assert schemas["RunSpec"]["type"] == "object"
     assert schemas["PlannerDecision"]["properties"]["confidence"]["minimum"] == 0.0
     assert schemas["PlannerDecision"]["properties"]["confidence"]["maximum"] == 1.0
