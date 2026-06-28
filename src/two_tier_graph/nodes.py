@@ -766,8 +766,7 @@ def executor_node(state: TwoTierState, config) -> dict:
                         continue
                     matched = False
                     if res.goal_type == "object":
-                        matched = (goal_desc.lower() in class_name.lower()
-                                   or class_name.lower() in goal_desc.lower())
+                        matched = goal_desc.lower() == class_name.lower()
                     else:
                         # description/image: CLIP cosine similarity
                         clip_model = res.models.get("clip_model")
