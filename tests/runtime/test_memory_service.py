@@ -1,0 +1,242 @@
+"""Tests for the spatial memory service."""
+from __future__ import annotations
+
+import pytest
+
+from src.tiernav_runtime.contracts import MemoryPack, Observation
+from src.tiernav_runtime.memory import (
+    HypothesisNode,
+    MemoryService,
+    ObjectNode,
+    RoomNode,
+    SnapshotNode,
+)
+
+
+def _observation(
+    *,
+    summary: str = "",
+    image_ids: list[str] | None = None,
+    object_ids: list[str] | None = None,
+    room_id: str | None = None,
+) -> Observation:
+    return Observation(
+        summary=summary,
+        image_ids=list(image_ids or []),
+        object_ids=list(object_ids or []),
+        room_id=room_id,
+    )
+
+
+# --- Plan examples ---------------------------------------------------------
+
+
+def test_memory_updates_room_snapshot_object_layers():
+    mem = MemoryService(enabled=True)
+    obs = _observation(
+        summary="sofa near the window",
+        image_ids=["img-1", "img-2"],
+        object_ids=["obj-sofa", "obj-window"],
+        room_id="room-A",
+    )
+    mem.update_from_observation(obs, action_type="explore_frontier", round_index=0)
+
+    # room layer
+    assert "room-A" in mem.rooms
+    room = mem.rooms["room-A"]
+    assert isinstance(room, RoomNode)
+    assert "snap-img-1" in room.snapshot_ids
+    assert "snap-img-2" in room.snapshot_ids
+
+    # snapshot layer
+    assert "snap-img-1" in mem.snapshots
+    snap = mem.snapshots["snap-img-1"]
+    assert isinstance(snap, SnapshotNode)
+    assert snap.room_id == "room-A"
+    assert snap.summary == "sofa near the window"
+    assert snap.round_index == 0
+    assert snap.action_type == "explore_frontier"
+    # snapshot records the object_ids present in the observation
+    assert "obj-sofa" in snap.object_ids
+    assert "obj-window" in snap.object_ids
+
+    # object layer
+    assert "obj-sofa" in mem.objects
+    sofa = mem.objects["obj-sofa"]
+    assert isinstance(sofa, ObjectNode)
+    assert sofa.room_id == "room-A"
+    assert "snap-img-1" in sofa.snapshot_ids
+    assert "snap-img-2" in sofa.snapshot_ids
+
+
+def test_memory_query_returns_context_ready_pack():
+    mem = MemoryService(enabled=True)
+    obs = _observation(
+        summary="a red sofa beside the window",
+        image_ids=["img-1"],
+        object_ids=["obj-sofa"],
+        room_id="room-A",
+    )
+    mem.update_from_observation(obs, action_type="explore_frontier", round_index=0)
+
+    pack = mem.query("sofa")
+    assert isinstance(pack, MemoryPack)
+    assert pack.query == "sofa"
+    # matching snapshot -> summary contains snapshot summary, evidence has snapshot id
+    assert "red sofa" in pack.summary
+    assert "snap-img-1" in pack.evidence_ids
+    assert pack.reuse_hint != ""
+
+
+def test_memory_can_be_disabled_without_crashing():
+    mem = MemoryService(enabled=False)
+    obs = _observation(
+        summary="sofa",
+        image_ids=["img-1"],
+        object_ids=["obj-sofa"],
+        room_id="room-A",
+    )
+    # none of these may raise
+    mem.update_from_observation(obs, action_type="explore_frontier", round_index=0)
+    mem.add_hypothesis("h1", "the sofa is in room-A")
+    mem.support_hypothesis("h1", "saw sofa here")
+    mem.contradict_hypothesis("h1", "sofa moved")
+    pack = mem.query("sofa")
+    assert isinstance(pack, MemoryPack)
+    assert pack.summary == ""
+    assert pack.evidence_ids == []
+
+
+def test_memory_records_hypothesis_support_and_contradiction():
+    mem = MemoryService(enabled=True)
+    mem.update_from_observation(
+        _observation(
+            summary="sofa",
+            image_ids=["img-1"],
+            object_ids=["obj-sofa"],
+            room_id="room-A",
+        ),
+        action_type="explore_frontier",
+        round_index=0,
+    )
+    mem.add_hypothesis("h1", "the sofa is in room-A")
+    mem.support_hypothesis("h1", "snapshot shows sofa in room-A")
+    mem.contradict_hypothesis("h1", "later snapshot shows no sofa")
+
+    pack = mem.query("sofa")
+    assert "snapshot shows sofa in room-A" in pack.supports
+    assert "later snapshot shows no sofa" in pack.contradictions
+
+
+# --- Extra coverage --------------------------------------------------------
+
+
+def test_repeated_update_does_not_duplicate_snapshot_ids():
+    mem = MemoryService(enabled=True)
+    obs = _observation(
+        summary="sofa",
+        image_ids=["img-1"],
+        object_ids=["obj-sofa"],
+        room_id="room-A",
+    )
+    mem.update_from_observation(obs, action_type="explore_frontier", round_index=0)
+    mem.update_from_observation(obs, action_type="explore_frontier", round_index=1)
+
+    room = mem.rooms["room-A"]
+    assert room.snapshot_ids.count("snap-img-1") == 1
+    obj = mem.objects["obj-sofa"]
+    assert obj.snapshot_ids.count("snap-img-1") == 1
+    # snapshot itself not duplicated
+    assert len(mem.snapshots) == 1
+
+
+def test_missing_room_id_uses_unknown():
+    mem = MemoryService(enabled=True)
+    obs = _observation(
+        summary="sofa",
+        image_ids=["img-1"],
+        object_ids=["obj-sofa"],
+        room_id=None,
+    )
+    mem.update_from_observation(obs, action_type="explore_frontier", round_index=0)
+
+    assert "unknown" in mem.rooms
+    assert mem.snapshots["snap-img-1"].room_id == "unknown"
+    assert mem.objects["obj-sofa"].room_id == "unknown"
+
+
+def test_no_direct_query_match_falls_back_to_existing_snapshots():
+    mem = MemoryService(enabled=True)
+    mem.update_from_observation(
+        _observation(
+            summary="a kitchen counter with fruits",
+            image_ids=["img-1"],
+            object_ids=["obj-counter"],
+            room_id="room-K",
+        ),
+        action_type="explore_frontier",
+        round_index=0,
+    )
+    # query that does not keyword-match the summary
+    pack = mem.query("garage")
+    assert pack.evidence_ids  # fallback returned some snapshot
+    assert "snap-img-1" in pack.evidence_ids
+
+
+def test_disabled_memory_does_not_record_hypothesis():
+    mem = MemoryService(enabled=False)
+    mem.add_hypothesis("h1", "the sofa is in room-A")
+    mem.support_hypothesis("h1", "saw sofa here")
+    mem.contradict_hypothesis("h1", "sofa moved")
+    assert mem.hypotheses == {}
+
+
+# --- Node model sanity -----------------------------------------------------
+
+
+def test_node_models_use_runtime_model_with_default_factory_lists():
+    """Mutable list defaults must be isolated per instance (Field(default_factory=list))."""
+    room = RoomNode(room_id="r")
+    snap = SnapshotNode(snapshot_id="s", room_id="r")
+    obj = ObjectNode(object_id="o", room_id="r")
+    hyp = HypothesisNode(hypothesis_id="h", text="t")
+    for node, field in [
+        (room, "snapshot_ids"),
+        (snap, "object_ids"),
+        (obj, "snapshot_ids"),
+        (hyp, "supports"),
+        (hyp, "contradictions"),
+    ]:
+        assert getattr(node, field) == []
+        # mutate one instance; a freshly constructed peer must not share state
+        getattr(node, field).append("x")
+        peer = type(node)(**{f: getattr(node, f) for f in type(node).model_fields if f != field})
+        assert "x" not in getattr(peer, field)
+
+
+def test_query_with_no_snapshots_returns_empty_pack():
+    mem = MemoryService(enabled=True)
+    pack = mem.query("anything")
+    assert isinstance(pack, MemoryPack)
+    assert pack.summary == ""
+    assert pack.evidence_ids == []
+    assert pack.reuse_hint == ""
+
+
+def test_evidence_only_uses_real_observation_ids():
+    """No fabricated evidence: evidence_ids are snapshot ids derived from image_ids."""
+    mem = MemoryService(enabled=True)
+    mem.update_from_observation(
+        _observation(
+            summary="sofa",
+            image_ids=["img-1", "img-2"],
+            object_ids=["obj-sofa"],
+            room_id="room-A",
+        ),
+        action_type="explore_frontier",
+        round_index=0,
+    )
+    pack = mem.query("sofa")
+    for eid in pack.evidence_ids:
+        assert eid.startswith("snap-")
+        assert eid.replace("snap-", "", 1) in {"img-1", "img-2"}
