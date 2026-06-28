@@ -82,6 +82,8 @@ def replay_events(path: str | Path) -> EpisodeState:
     expected_episode_id: str | None = None
     for event in events:
         if event.event_type == "episode_started":
+            if state is not None:
+                raise ValueError("event log contains repeated episode_started")
             if "request" in event.payload:
                 request_payload = event.payload["request"]
                 request = EpisodeRequest.model_validate(request_payload)

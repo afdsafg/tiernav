@@ -172,6 +172,48 @@ def test_replay_rejects_mixed_episode_ids(tmp_path):
     assert "episode_id" in str(exc.value)
 
 
+def test_replay_rejects_second_start_for_different_episode(tmp_path):
+    path = tmp_path / "events.jsonl"
+    req = _request()
+    other_req = EpisodeRequest(
+        episode_id="ep-2",
+        scene_id="scene-2",
+        task_name="aeqa",
+        task_mode="question_answering",
+        prompt="What is on the counter?",
+        output_dir="/tmp/tiernav",
+    )
+    path.write_text(
+        "\n".join([
+            make_event("ep-1", "episode_started", 1, {"request": req.model_dump(mode="json")}).model_dump_json(),
+            make_event("ep-2", "episode_started", 2, {"request": other_req.model_dump(mode="json")}).model_dump_json(),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises((ValueError, ValidationError)) as exc:
+        replay_events(path)
+
+    assert "episode_id" in str(exc.value) or "episode_started" in str(exc.value)
+
+
+def test_replay_rejects_repeated_start_for_same_episode(tmp_path):
+    path = tmp_path / "events.jsonl"
+    req = _request()
+    path.write_text(
+        "\n".join([
+            make_event("ep-1", "episode_started", 1, {"request": req.model_dump(mode="json")}).model_dump_json(),
+            make_event("ep-1", "episode_started", 2, {"request": req.model_dump(mode="json")}).model_dump_json(),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises((ValueError, ValidationError)) as exc:
+        replay_events(path)
+
+    assert "episode_started" in str(exc.value)
+
+
 def test_replay_rejects_invalid_request_payload(tmp_path):
     path = tmp_path / "events.jsonl"
     path.write_text(
