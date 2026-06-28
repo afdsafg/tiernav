@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from src.tiernav_runtime.contracts import (
     EpisodeRequest,
     EpisodeResult,
@@ -174,3 +176,35 @@ def test_event_log_has_started_and_ended_with_sequences_1_and_2(tmp_path):
     ended_payload = lines[1]["payload"]
     for key in ("success", "answer", "round_index", "step_index"):
         assert key in ended_payload, f"episode_ended payload missing {key}"
+
+
+# ── Re-run protection ─────────────────────────────────────────────────────
+
+
+def test_second_run_same_episode_id_raises_FileExistsError(tmp_path):
+    """Re-running the same episode_id into the same output_dir must be rejected.
+
+    The event log is append-only; a second run must not overwrite or append to
+    a previously recorded log. The old log stays intact and replayable.
+    """
+    planner = FakePlanner(
+        [PlannerDecision(action_type="submit_answer", arguments={"answer": "chair"})]
+    )
+    entrypoint = RuntimeEntrypoint.with_fake_services(planner)
+    spec = _spec(str(tmp_path))
+    request = _request()
+
+    first = entrypoint.run(spec, request)
+    assert first.success is True
+
+    with pytest.raises(FileExistsError):
+        entrypoint.run(spec, request)
+
+    # Old event log is untouched: still 2 lines, still replays to terminal.
+    with open(first.event_log_path, "r", encoding="utf-8") as fh:
+        lines = [json.loads(line) for line in fh if line.strip()]
+    assert len(lines) == 2
+
+    state = replay_events(first.event_log_path)
+    assert state.terminal is True
+    assert state.answer == "chair"

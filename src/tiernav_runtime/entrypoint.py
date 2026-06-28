@@ -51,7 +51,23 @@ class RuntimeEntrypoint:
         return cls(services)
 
     def run(self, spec: RunSpec, request: EpisodeRequest) -> EpisodeResult:
+        """Run one episode through the runtime graph and write its event log.
+
+        The event log is append-only: if a log already exists for this episode
+        (e.g. a prior run with the same episode_id and output_dir), this raises
+        ``FileExistsError`` rather than overwriting or appending to it, so a
+        re-run cannot pollute a previously recorded episode.
+
+        Note: ``graph.invoke`` runs after ``episode_started`` is appended. If it
+        raises, the log is left with only ``episode_started``; callers should
+        treat a partial log as a failed run rather than replay it as terminal.
+        """
         event_log_path = Path(spec.output_dir) / request.episode_id / "events.jsonl"
+        if event_log_path.exists():
+            raise FileExistsError(
+                f"event log already exists for episode_id={request.episode_id!r} "
+                f"at {event_log_path}; refusing to overwrite append-only log"
+            )
         recorder = EpisodeRecorder(event_log_path)
 
         recorder.append(
