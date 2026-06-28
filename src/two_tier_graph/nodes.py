@@ -747,11 +747,50 @@ def executor_node(state: TwoTierState, config) -> dict:
     from src.agent_tools import silent_perception_step
     steps_taken = int(getattr(silent_perception_step, "_step_counter", 0))
 
+    # ── GOATBench: 从观测提取匹配目标位置（反投影，非真值）──
+    observed_goal_positions = []
+    if res.goal_type is not None:
+        goal_desc = (res.goal_metadata or {}).get("goal_description", "")
+        scene = res.scene
+        if scene is not None and hasattr(scene, "objects") and goal_desc:
+            try:
+                import numpy as np
+                for oid, obj in scene.objects.items():
+                    if not isinstance(obj, dict) or "bbox" not in obj:
+                        continue
+                    bbox = obj["bbox"]
+                    if bbox is None or not hasattr(bbox, "center"):
+                        continue
+                    class_name = obj.get("class_name", "")
+                    if not class_name:
+                        continue
+                    matched = False
+                    if res.goal_type == "object":
+                        matched = (goal_desc.lower() in class_name.lower()
+                                   or class_name.lower() in goal_desc.lower())
+                    else:
+                        # description/image: CLIP cosine similarity
+                        clip_model = res.models.get("clip_model")
+                        clip_tokenizer = res.models.get("clip_tokenizer")
+                        if clip_model is not None and clip_tokenizer is not None:
+                            import torch
+                            with torch.no_grad():
+                                tokens = clip_tokenizer([class_name, goal_desc]).to("cuda")
+                                feats = clip_model.encode_text(tokens)
+                                feats = feats / feats.norm(dim=-1, keepdim=True)
+                                sim = float((feats[0] @ feats[1]).item())
+                                matched = sim > 0.25
+                    if matched:
+                        observed_goal_positions.append(np.asarray(bbox.center).copy())
+            except Exception as e:
+                logger.warning(f"goal position extraction failed: {e}")
+
     return {
         "last_evidence": evidence,
         "pose": {"pts": res.executor._pts, "angle": float(res.executor._angle)},
         "steps_taken": steps_taken,
         "action_history": [action.action_type],  # append via operator.add reducer
+        "observed_goal_positions": observed_goal_positions,
     }
 
 
