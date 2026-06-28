@@ -133,6 +133,6 @@ class TwoTierState(TypedDict):
     cross_subtask_notes: Annotated[list, operator.add]
 
     # ── GOATBench proximity（check_arrival / executor 写入）──
-    observed_goal_positions: Annotated[list, operator.add]  # executor 每步 append 匹配目标世界坐标
+    observed_goal_positions: list  # executor 每步覆写（last-writer-wins，避免历史误匹配累积）
     within_target: bool
     agent_target_distance: float
