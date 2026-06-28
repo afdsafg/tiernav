@@ -52,6 +52,16 @@ def run_episode_two_tier_langgraph(
     start_angle: float = 0.0,
     run_logger=None,
     method_config: Optional[dict] = None,
+    # ── GOATBench 新增（AEQA 路径不传，走默认值）──
+    scene=None,
+    tsdf_planner=None,
+    notebook=None,
+    scene_graph=None,
+    goal_type: Optional[str] = None,
+    goal_metadata: Optional[dict] = None,
+    subtask_index: int = 0,
+    subtask_total: int = 1,
+    cross_subtask_notes: Optional[list] = None,
 ) -> Dict:
     """LangGraph-based Two-Tier Planner-Executor episode loop.
 
@@ -91,7 +101,9 @@ def run_episode_two_tier_langgraph(
     }
 
     # ── Build Resources (mirrors :1160-1226) ──────────────────────────
-    scene = None
+    # GOATBench: caller may inject scene/tsdf_planner/notebook/scene_graph;
+    # ownership of scene lifecycle stays with caller in that case.
+    scene_owned = scene is None
     try:
         from src.agent_tools import silent_perception_step
         silent_perception_step._last_pos = None
@@ -114,13 +126,14 @@ def run_episode_two_tier_langgraph(
         else:
             graph_cfg = getattr(cfg, "scene_graph", {})
 
-        from src.scene_aeqa import Scene
-        scene = Scene(
-            scene_id=scene_id, cfg=cfg, graph_cfg=graph_cfg,
-            detection_model=detection_model, sam_predictor=sam_predictor,
-            clip_model=clip_model, clip_preprocess=clip_preprocess,
-            clip_tokenizer=clip_tokenizer,
-        )
+        if scene is None:
+            from src.scene_aeqa import Scene
+            scene = Scene(
+                scene_id=scene_id, cfg=cfg, graph_cfg=graph_cfg,
+                detection_model=detection_model, sam_predictor=sam_predictor,
+                clip_model=clip_model, clip_preprocess=clip_preprocess,
+                clip_tokenizer=clip_tokenizer,
+            )
 
         if start_pts is not None and not np.isnan(start_pts).any():
             pts = start_pts.copy()
@@ -132,18 +145,19 @@ def run_episode_two_tier_langgraph(
             pts = start_pts_random.copy()
             angle = 0.0
 
-        from src.geom import get_scene_bnds
-        from src.tsdf_planner import TSDFPlanner
-        vol_bnds, _ = get_scene_bnds(scene.pathfinder, floor_height=pts[1])
-        tsdf_planner = TSDFPlanner(
-            vol_bnds=vol_bnds,
-            voxel_size=cfg.tsdf_grid_size,
-            floor_height=pts[1],
-            floor_height_offset=0,
-            pts_init=pts,
-            init_clearance=cfg.init_clearance * 2,
-            save_visualization=bool(getattr(cfg, "save_visualization", False)),
-        )
+        if tsdf_planner is None:
+            from src.geom import get_scene_bnds
+            from src.tsdf_planner import TSDFPlanner
+            vol_bnds, _ = get_scene_bnds(scene.pathfinder, floor_height=pts[1])
+            tsdf_planner = TSDFPlanner(
+                vol_bnds=vol_bnds,
+                voxel_size=cfg.tsdf_grid_size,
+                floor_height=pts[1],
+                floor_height_offset=0,
+                pts_init=pts,
+                init_clearance=cfg.init_clearance * 2,
+                save_visualization=bool(getattr(cfg, "save_visualization", False)),
+            )
 
         memory_store = MemoryStore(
             output_dir=os.path.join(output_dir, f"memory_{question_id}")
@@ -157,10 +171,14 @@ def run_episode_two_tier_langgraph(
         executor.set_state(pts, angle, 0)
 
         from src.const import QWEN_PLANNER_API_KEY, QWEN_PLANNER_BASE_URL
-        planner = Planner(api_key=QWEN_PLANNER_API_KEY, base_url=QWEN_PLANNER_BASE_URL)
+        planner = Planner(api_key=QWEN_PLANNER_API_KEY, base_url=QWEN_PLANNER_BASE_URL, goal_type=goal_type)
 
-        notebook = EvidenceNotebook()
-        scene_graph = SceneGraphMemory() if use_scene_graph else None
+        if notebook is None:
+            notebook = EvidenceNotebook()
+        if scene_graph is None and use_scene_graph:
+            scene_graph = SceneGraphMemory()
+        elif scene_graph is None and not use_scene_graph:
+            scene_graph = None
 
         # Build LLM provider + tool registry (new abstractions)
         llm_provider = build_llm_provider(cfg, planner)
@@ -188,12 +206,14 @@ def run_episode_two_tier_langgraph(
             question_id=question_id,
             question=question,
             output_dir=output_dir,
+            goal_type=goal_type,
+            goal_metadata=goal_metadata,
         )
 
     except Exception as e:
         logger.error(f"Two-tier (LangGraph) initialization failed: {e}")
         result["error"] = str(e)
-        if scene is not None:
+        if scene is not None and scene_owned:
             try:
                 scene.__del__()
             except Exception:
@@ -248,6 +268,16 @@ def run_episode_two_tier_langgraph(
             "error": "",
             "terminal": False,
             "failure_type": "",
+            # ── GOATBench 任务上下文（note_node 设置 task_type/task_plan）──
+            "task_type": "",            # note_node 会设置
+            "task_plan": "",
+            "is_terminal_task": False,
+            "subtask_index": subtask_index,
+            "subtask_total": subtask_total,
+            "cross_subtask_notes": cross_subtask_notes or [],
+            "observed_goal_positions": [],
+            "within_target": False,
+            "agent_target_distance": float("inf"),
         }
 
         graph = build_two_tier_graph()
@@ -275,6 +305,14 @@ def run_episode_two_tier_langgraph(
         # TODO: wire snapshot tracking from executor/memory-update nodes.
         result["n_filtered_snapshots"] = 0
         result["n_total_snapshots"] = 0
+        # ── Threaded resources + GOATBench return fields ──
+        result["_notebook"] = resources.notebook
+        result["_scene_graph"] = resources.scene_graph
+        result["final_pts"] = final_state.get("pose", {}).get("pts")
+        result["final_angle"] = final_state.get("pose", {}).get("angle", 0.0)
+        result["cross_subtask_notes"] = final_state.get(
+            "cross_subtask_notes", cross_subtask_notes or []
+        )
         return result
 
     except Exception as e:
@@ -297,7 +335,7 @@ def run_episode_two_tier_langgraph(
         return result
 
     finally:
-        if scene is not None:
+        if scene is not None and scene_owned:
             try:
                 scene.__del__()
             except Exception:
