@@ -5,12 +5,17 @@ from enum import Enum
 from numbers import Real
 from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, field_validator
 
 
 SCHEMA_VERSION = "tiernav.runtime.v1"
 SchemaVersion = Literal["tiernav.runtime.v1"]
-ConfidenceScore = Annotated[float, Field(ge=0.0, le=1.0)]
+NonNegativeInt = Annotated[StrictInt, Field(ge=0)]
+NonNegativeFloat = Annotated[StrictFloat, Field(ge=0.0)]
+FiniteFloat = Annotated[StrictFloat, Field(allow_inf_nan=False)]
+PoseValues = dict[str, FiniteFloat]
+MetricsMap = dict[str, FiniteFloat]
+ConfidenceScore = Annotated[StrictFloat, Field(ge=0.0, le=1.0, allow_inf_nan=False)]
 
 
 class RuntimeModel(BaseModel):
@@ -44,9 +49,9 @@ class RunSpec(RuntimeModel):
     output_dir: str
     planner_provider: str
     planner_model: str
-    seed: int = 0
-    max_rounds: int = Field(default=10, ge=0)
-    max_steps: int = Field(default=50, ge=0)
+    seed: NonNegativeInt = 0
+    max_rounds: NonNegativeInt = 10
+    max_steps: NonNegativeInt = 50
     ablation: AblationConfig = Field(default_factory=AblationConfig)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -61,7 +66,7 @@ class EpisodeRequest(RuntimeModel):
     task_mode: TaskMode
     prompt: str
     goal_metadata: dict[str, Any] = Field(default_factory=dict)
-    initial_pose: dict[str, float] = Field(default_factory=dict)
+    initial_pose: PoseValues = Field(default_factory=dict)
     output_dir: str = ""
 
 
@@ -72,7 +77,7 @@ class Observation(RuntimeModel):
     image_ids: list[str] = Field(default_factory=list)
     object_ids: list[str] = Field(default_factory=list)
     room_id: Optional[str] = None
-    pose: dict[str, float] = Field(default_factory=dict)
+    pose: PoseValues = Field(default_factory=dict)
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -119,7 +124,7 @@ class ToolResult(RuntimeModel):
     terminal: bool = False
     observation: Observation = Field(default_factory=Observation)
     error: str = ""
-    metrics: dict[str, float] = Field(default_factory=dict)
+    metrics: MetricsMap = Field(default_factory=dict)
 
 
 class MemoryPack(RuntimeModel):
@@ -140,7 +145,7 @@ class ContextSection(RuntimeModel):
     name: str
     content: str
     cacheable: bool
-    token_estimate: int = Field(default=0, ge=0)
+    token_estimate: NonNegativeInt = 0
     content_hash: str = ""
 
 
@@ -153,9 +158,9 @@ class EpisodeState(RuntimeModel):
     task_name: str
     task_mode: TaskMode
     prompt: str
-    round_index: int = Field(default=0, ge=0)
-    step_index: int = Field(default=0, ge=0)
-    pose: dict[str, float] = Field(default_factory=dict)
+    round_index: NonNegativeInt = 0
+    step_index: NonNegativeInt = 0
+    pose: PoseValues = Field(default_factory=dict)
     current_decision: Optional[PlannerDecision] = None
     last_observation: Observation = Field(default_factory=Observation)
     memory_pack: Optional[MemoryPack] = None
@@ -176,9 +181,9 @@ class EpisodeResult(RuntimeModel):
     task_mode: TaskMode
     success: bool
     answer: str = ""
-    steps_taken: int = Field(default=0, ge=0)
-    rounds_used: int = Field(default=0, ge=0)
-    path_length: float = Field(default=0.0, ge=0.0)
+    steps_taken: NonNegativeInt = 0
+    rounds_used: NonNegativeInt = 0
+    path_length: NonNegativeFloat = 0.0
     failure_type: str = ""
     error: str = ""
     event_log_path: str = ""

@@ -60,6 +60,23 @@ def test_run_spec_rejects_negative_max_rounds():
         raise AssertionError("RunSpec accepted a negative max_rounds")
 
 
+def test_run_spec_rejects_string_max_rounds():
+    try:
+        RunSpec(
+            run_id="run-001",
+            task_name="aeqa",
+            dataset_split="dev",
+            output_dir="/tmp/tiernav",
+            planner_provider="mimo",
+            planner_model="qwen3-vl-flash",
+            max_rounds="5",
+        )
+    except ValidationError as exc:
+        assert "max_rounds" in str(exc)
+    else:
+        raise AssertionError("RunSpec accepted string max_rounds")
+
+
 @pytest.mark.parametrize(
     ("model_type", "kwargs"),
     [
@@ -131,6 +148,22 @@ def test_episode_request_rejects_unknown_task_mode():
         assert "task_mode" in str(exc)
     else:
         raise AssertionError("EpisodeRequest accepted an unknown task_mode")
+
+
+def test_episode_request_rejects_non_finite_initial_pose_values():
+    try:
+        EpisodeRequest(
+            episode_id="ep-1",
+            scene_id="scene",
+            task_name="aeqa",
+            task_mode="question_answering",
+            prompt="What color is the chair?",
+            initial_pose={"x": float("nan")},
+        )
+    except ValidationError as exc:
+        assert "initial_pose" in str(exc)
+    else:
+        raise AssertionError("EpisodeRequest accepted a non-finite initial_pose value")
 
 
 def test_planner_decision_round_trip_json():
@@ -209,6 +242,22 @@ def test_episode_state_rejects_negative_step_index():
         raise AssertionError("EpisodeState accepted a negative step_index")
 
 
+def test_episode_state_rejects_bool_step_index():
+    try:
+        EpisodeState(
+            episode_id="ep-1",
+            scene_id="scene",
+            task_name="aeqa",
+            task_mode="question_answering",
+            prompt="Where is the lamp?",
+            step_index=True,
+        )
+    except ValidationError as exc:
+        assert "step_index" in str(exc)
+    else:
+        raise AssertionError("EpisodeState accepted bool step_index")
+
+
 def test_episode_state_rejects_unknown_top_level_fields():
     try:
         EpisodeState(
@@ -243,6 +292,22 @@ def test_episode_state_rejects_unknown_nested_current_decision_fields():
         raise AssertionError("EpisodeState accepted an unexpected current_decision field")
 
 
+def test_episode_state_rejects_non_finite_pose_values():
+    try:
+        EpisodeState(
+            episode_id="ep-1",
+            scene_id="scene",
+            task_name="aeqa",
+            task_mode="question_answering",
+            prompt="Where is the lamp?",
+            pose={"x": float("inf")},
+        )
+    except ValidationError as exc:
+        assert "pose" in str(exc)
+    else:
+        raise AssertionError("EpisodeState accepted a non-finite pose value")
+
+
 def test_tool_contracts_validate_terminal_results():
     call = ToolCall(
         call_id="tool-1",
@@ -259,6 +324,20 @@ def test_tool_contracts_validate_terminal_results():
 
     assert result.terminal is True
     assert result.observation.summary == "Answer submitted."
+
+
+def test_tool_result_rejects_non_finite_metric_values():
+    try:
+        ToolResult(
+            call_id="tool-1",
+            action_type="submit_answer",
+            ok=True,
+            metrics={"distance": float("nan")},
+        )
+    except ValidationError as exc:
+        assert "metrics" in str(exc)
+    else:
+        raise AssertionError("ToolResult accepted a non-finite metric value")
 
 
 def test_tool_result_rejects_unknown_nested_observation_fields():
@@ -336,6 +415,15 @@ def test_observation_rejects_unknown_nested_fields():
         raise AssertionError("Observation accepted an unexpected nested field")
 
 
+def test_observation_rejects_non_finite_pose_values():
+    try:
+        Observation(summary="Seen chair", pose={"x": float("inf")})
+    except ValidationError as exc:
+        assert "pose" in str(exc)
+    else:
+        raise AssertionError("Observation accepted a non-finite pose value")
+
+
 @pytest.mark.parametrize("invalid_confidence", [float("nan"), float("inf")])
 def test_memory_pack_rejects_non_finite_confidence(invalid_confidence):
     try:
@@ -344,6 +432,16 @@ def test_memory_pack_rejects_non_finite_confidence(invalid_confidence):
         assert "confidence" in str(exc)
     else:
         raise AssertionError("MemoryPack accepted a non-finite confidence")
+
+
+@pytest.mark.parametrize("invalid_confidence", ["0.6", True])
+def test_memory_pack_rejects_nonnumeric_confidence(invalid_confidence):
+    try:
+        MemoryPack(query="lamp", summary="Seen lamp", confidence=invalid_confidence)
+    except ValidationError as exc:
+        assert "confidence" in str(exc)
+    else:
+        raise AssertionError("MemoryPack accepted a nonnumeric confidence")
 
 
 def test_memory_pack_serializes_numeric_confidence_as_json_number():
@@ -355,6 +453,35 @@ def test_memory_pack_serializes_numeric_confidence_as_json_number():
     assert payload["confidence"] is not None
 
 
+def test_mapped_float_values_serialize_as_json_numbers():
+    request = EpisodeRequest(
+        episode_id="ep-1",
+        scene_id="scene",
+        task_name="aeqa",
+        task_mode="question_answering",
+        prompt="Where is the lamp?",
+        initial_pose={"x": 1.25},
+    )
+    observation = Observation(summary="Seen chair", pose={"x": 2.5})
+    tool_result = ToolResult(
+        call_id="tool-1",
+        action_type="submit_answer",
+        ok=True,
+        metrics={"distance": 3.75},
+    )
+
+    request_payload = json.loads(request.model_dump_json())
+    observation_payload = json.loads(observation.model_dump_json())
+    tool_result_payload = json.loads(tool_result.model_dump_json())
+
+    assert request_payload["initial_pose"]["x"] == 1.25
+    assert request_payload["initial_pose"]["x"] is not None
+    assert observation_payload["pose"]["x"] == 2.5
+    assert observation_payload["pose"]["x"] is not None
+    assert tool_result_payload["metrics"]["distance"] == 3.75
+    assert tool_result_payload["metrics"]["distance"] is not None
+
+
 def test_context_section_rejects_negative_token_estimate():
     try:
         ContextSection(name="planner", content="...", cacheable=True, token_estimate=-1)
@@ -362,6 +489,15 @@ def test_context_section_rejects_negative_token_estimate():
         assert "token_estimate" in str(exc)
     else:
         raise AssertionError("ContextSection accepted a negative token_estimate")
+
+
+def test_context_section_rejects_string_token_estimate():
+    try:
+        ContextSection(name="planner", content="...", cacheable=True, token_estimate="12")
+    except ValidationError as exc:
+        assert "token_estimate" in str(exc)
+    else:
+        raise AssertionError("ContextSection accepted string token_estimate")
 
 
 def test_json_schema_dump_contains_all_public_models():
