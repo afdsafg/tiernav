@@ -36,5 +36,5 @@ def make_event(
         event_type=event_type,
         sequence=sequence,
         timestamp_utc=datetime.now(timezone.utc).isoformat(),
-        payload=payload or {},
+        payload={} if payload is None else payload,
     )

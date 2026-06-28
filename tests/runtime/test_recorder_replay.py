@@ -34,6 +34,18 @@ def test_make_event_has_schema_version_and_sequence():
     assert event.event_type == "episode_started"
 
 
+def test_make_event_omitted_payload_defaults_to_empty_object():
+    event = make_event("ep-1", "episode_started", 1)
+
+    assert event.payload == {}
+
+
+def test_make_event_empty_dict_payload_stays_empty_object():
+    event = make_event("ep-1", "episode_started", 1, {})
+
+    assert event.payload == {}
+
+
 def test_episode_event_rejects_wrong_schema_version():
     with pytest.raises(ValidationError):
         EpisodeEvent(
@@ -50,6 +62,12 @@ def test_episode_event_rejects_wrong_schema_version():
 def test_make_event_rejects_invalid_sequences(bad_sequence):
     with pytest.raises(ValidationError):
         make_event("ep-1", "episode_started", bad_sequence, {"scene_id": "scene"})
+
+
+@pytest.mark.parametrize("bad_payload", [[], "", 0, False])
+def test_make_event_rejects_invalid_falsy_payloads(bad_payload):
+    with pytest.raises(ValidationError):
+        make_event("ep-1", "episode_started", 1, bad_payload)
 
 
 def test_make_event_rejects_arbitrary_python_objects():
