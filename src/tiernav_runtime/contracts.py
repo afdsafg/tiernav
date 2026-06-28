@@ -14,13 +14,15 @@ SchemaVersion = Literal["tiernav.runtime.v1"]
 NonNegativeInt = Annotated[StrictInt, Field(ge=0)]
 NonNegativeFloat = Annotated[StrictFloat, Field(ge=0.0, allow_inf_nan=False)]
 FiniteFloat = Annotated[StrictFloat, Field(allow_inf_nan=False)]
+JsonInt = StrictInt
+JsonFloat = Annotated[StrictFloat, Field(allow_inf_nan=False)]
 PoseValues = dict[str, FiniteFloat]
 MetricsMap = dict[str, FiniteFloat]
 ConfidenceScore = Annotated[StrictFloat, Field(ge=0.0, le=1.0, allow_inf_nan=False)]
-JsonScalar = Union[None, bool, str, int, float]
+JsonScalar = Union[None, bool, str, JsonInt, JsonFloat]
 JsonValue = TypeAliasType(
     "JsonValue",
-    "Union[None, bool, str, int, float, list[JsonValue], dict[str, JsonValue]]",
+    "Union[None, bool, str, JsonInt, JsonFloat, list[JsonValue], dict[str, JsonValue]]",
 )
 JsonObject = dict[str, JsonValue]
 

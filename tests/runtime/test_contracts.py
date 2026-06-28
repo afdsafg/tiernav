@@ -1,5 +1,6 @@
 """Contract tests for the TierNav runtime."""
 import json
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
@@ -13,6 +14,8 @@ from src.tiernav_runtime.contracts import (
     MemoryPack,
     Observation,
     PlannerDecision,
+    PUBLIC_MODELS,
+    PublicModel,
     RunSpec,
     ToolCall,
     ToolResult,
@@ -92,6 +95,23 @@ def test_run_spec_rejects_non_json_metadata_values():
         assert "metadata" in str(exc)
     else:
         raise AssertionError("RunSpec accepted a non-JSON metadata value")
+
+
+def test_run_spec_rejects_non_finite_json_metadata_values():
+    try:
+        RunSpec(
+            run_id="run-001",
+            task_name="aeqa",
+            dataset_split="dev",
+            output_dir="/tmp/tiernav",
+            planner_provider="mimo",
+            planner_model="qwen3-vl-flash",
+            metadata={"bad": float("nan")},
+        )
+    except ValidationError as exc:
+        assert "metadata" in str(exc)
+    else:
+        raise AssertionError("RunSpec accepted a non-finite JSON metadata value")
 
 
 @pytest.mark.parametrize(
@@ -199,6 +219,22 @@ def test_episode_request_rejects_non_json_goal_metadata_values():
         raise AssertionError("EpisodeRequest accepted a non-JSON goal_metadata value")
 
 
+def test_episode_request_rejects_non_finite_goal_metadata_values():
+    try:
+        EpisodeRequest(
+            episode_id="ep-1",
+            scene_id="scene",
+            task_name="aeqa",
+            task_mode="question_answering",
+            prompt="What color is the chair?",
+            goal_metadata={"bad": float("inf")},
+        )
+    except ValidationError as exc:
+        assert "goal_metadata" in str(exc)
+    else:
+        raise AssertionError("EpisodeRequest accepted a non-finite goal_metadata value")
+
+
 def test_planner_decision_round_trip_json():
     decision = PlannerDecision(
         action_type="navigate_to_object",
@@ -224,6 +260,15 @@ def test_planner_decision_rejects_non_json_arguments_values():
         raise AssertionError("PlannerDecision accepted a non-JSON arguments value")
 
 
+def test_planner_decision_rejects_non_finite_json_arguments_values():
+    try:
+        PlannerDecision(action_type="search", arguments={"bad": float("inf")})
+    except ValidationError as exc:
+        assert "arguments" in str(exc)
+    else:
+        raise AssertionError("PlannerDecision accepted a non-finite JSON arguments value")
+
+
 def test_planner_decision_serializes_nested_json_arguments():
     decision = PlannerDecision(
         action_type="search",
@@ -239,6 +284,25 @@ def test_planner_decision_serializes_nested_json_arguments():
 
     assert payload["arguments"]["target"]["name"] == "chair"
     assert payload["arguments"]["target"]["attributes"] == ["red", 2, True, None]
+
+
+def test_json_payload_fields_serialize_finite_numbers_as_json_numbers():
+    spec = RunSpec(
+        run_id="run-001",
+        task_name="aeqa",
+        dataset_split="dev",
+        output_dir="/tmp/tiernav",
+        planner_provider="mimo",
+        planner_model="qwen3-vl-flash",
+        metadata={"count": 2, "score": 1.5, "nested": {"values": [3, 4.25]}},
+    )
+
+    payload = json.loads(spec.model_dump_json())
+
+    assert payload["metadata"]["count"] == 2
+    assert payload["metadata"]["score"] == 1.5
+    assert payload["metadata"]["nested"]["values"] == [3, 4.25]
+    assert payload["metadata"]["score"] is not None
 
 
 def test_planner_decision_clamps_out_of_range_confidence():
@@ -529,6 +593,15 @@ def test_observation_rejects_non_json_raw_values():
         raise AssertionError("Observation accepted a non-JSON raw value")
 
 
+def test_observation_rejects_non_finite_json_raw_values():
+    try:
+        Observation(raw={"bad": float("nan")})
+    except ValidationError as exc:
+        assert "raw" in str(exc)
+    else:
+        raise AssertionError("Observation accepted a non-finite JSON raw value")
+
+
 def test_observation_rejects_non_finite_pose_values():
     try:
         Observation(summary="Seen chair", pose={"x": float("inf")})
@@ -596,6 +669,15 @@ def test_mapped_float_values_serialize_as_json_numbers():
     assert tool_result_payload["metrics"]["distance"] is not None
 
 
+def test_tool_call_rejects_non_finite_json_arguments_values():
+    try:
+        ToolCall(call_id="tool-1", action_type="search", arguments={"bad": float("nan")})
+    except ValidationError as exc:
+        assert "arguments" in str(exc)
+    else:
+        raise AssertionError("ToolCall accepted a non-finite JSON arguments value")
+
+
 def test_context_section_rejects_negative_token_estimate():
     try:
         ContextSection(name="planner", content="...", cacheable=True, token_estimate=-1)
@@ -638,3 +720,7 @@ def test_json_schema_dump_contains_all_public_models():
     assert schemas["MemoryPack"]["properties"]["confidence"]["minimum"] == 0.0
     assert schemas["MemoryPack"]["properties"]["confidence"]["maximum"] == 1.0
     assert schemas["ContextSection"]["properties"]["token_estimate"]["minimum"] == 0
+
+
+def test_public_model_literal_matches_public_models_registry():
+    assert set(get_args(PublicModel)) == set(PUBLIC_MODELS)
