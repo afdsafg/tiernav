@@ -30,9 +30,9 @@ def planner_action_to_decision(action: Any) -> PlannerDecision:
         confidence = 0.0
 
     arguments = {
-        field: getattr(action, field)
+        field: getattr(action, field, None)
         for field in _ARGUMENT_FIELDS
-        if getattr(action, field) is not None
+        if getattr(action, field, None) is not None
     }
 
     return PlannerDecision(

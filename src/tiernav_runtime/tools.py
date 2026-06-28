@@ -103,7 +103,16 @@ class ToolRegistry:
                 terminal=False,
                 error=f"unknown tool: {call.action_type}",
             )
-        return tool.run(call)
+        try:
+            return tool.run(call)
+        except Exception as exc:
+            return ToolResult(
+                call_id=call.call_id,
+                action_type=call.action_type,
+                ok=False,
+                terminal=False,
+                error=f"{type(exc).__name__}: {exc}",
+            )
 
     def action_schema_text(self) -> str:
         lines = ["Available tools:"]

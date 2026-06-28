@@ -102,6 +102,24 @@ def test_registry_unknown_tool_returns_structured_error():
     assert "unknown tool" in result.error
 
 
+class BoomTool(RuntimeTool):
+    name = "boom"
+
+    def run(self, call: ToolCall) -> ToolResult:  # noqa: D401
+        raise RuntimeError("boom")
+
+
+def test_registry_dispatch_catches_tool_exception():
+    reg = ToolRegistry()
+    reg.register(BoomTool())
+    call = ToolCall(call_id="c_boom", action_type="boom", arguments={})
+    result = reg.dispatch(call)
+    assert result.ok is False
+    assert result.terminal is False
+    assert "RuntimeError" in result.error
+    assert "boom" in result.error
+
+
 def test_registry_names_sorted():
     reg = ToolRegistry()
     reg.register(EchoTool())
