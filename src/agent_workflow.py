@@ -193,13 +193,13 @@ def call_vlm(
     """调用 VLM API (OpenAI-compatible)."""
 
     if api_key is None:
-        from src.const import OPENAI_API_KEY as _key
+        from src.const import QWEN_PLANNER_API_KEY as _key
         api_key = _key
     if base_url is None:
-        from src.const import OPENAI_BASE_URL as _url
+        from src.const import QWEN_PLANNER_BASE_URL as _url
         base_url = _url
     if model_name is None:
-        from src.const import MODEL_NAME as _model
+        from src.const import QWEN_PLANNER_MODEL as _model
         model_name = _model
 
     # Deep copy messages to avoid mutation
@@ -1069,6 +1069,11 @@ def run_episode_two_tier(
     start_angle: float = 0.0,
     run_logger=None,
     method_config: Optional[dict] = None,
+    scene_class=None,
+    goal_type: Optional[str] = None,
+    goal_metadata: Optional[dict] = None,
+    scene=None,
+    tsdf_planner=None,
 ) -> Dict:
     """Two-tier Planner-Executor episode loop.
 
@@ -1087,7 +1092,10 @@ def run_episode_two_tier(
             choose_every_step (bool, default False) — query VLM every step (A2 ablation)
     """
     import habitat_sim
-    from src.scene_aeqa import Scene
+    if scene_class is not None:
+        Scene = scene_class
+    else:
+        from src.scene_aeqa import Scene
     from src.habitat import pos_normal_to_habitat
     from src.tsdf_planner import TSDFPlanner
     from src.const import QWEN_PLANNER_API_KEY, QWEN_PLANNER_BASE_URL
@@ -1120,7 +1128,7 @@ def run_episode_two_tier(
     tsdf_planner = None
     notebook = EvidenceNotebook()
     scene_graph = SceneGraphMemory() if use_scene_graph else None
-    planner = Planner(api_key=QWEN_PLANNER_API_KEY, base_url=QWEN_PLANNER_BASE_URL)
+    planner = Planner(api_key=QWEN_PLANNER_API_KEY, base_url=QWEN_PLANNER_BASE_URL, goal_type=goal_type)
     executor = None
 
     if run_logger is not None:
@@ -1149,12 +1157,13 @@ def run_episode_two_tier(
         else:
             graph_cfg = getattr(cfg, "scene_graph", {})
 
-        scene = Scene(
-            scene_id=scene_id, cfg=cfg, graph_cfg=graph_cfg,
-            detection_model=detection_model, sam_predictor=sam_predictor,
-            clip_model=clip_model, clip_preprocess=clip_preprocess,
-            clip_tokenizer=clip_tokenizer,
-        )
+        if scene is None:
+            scene = Scene(
+                scene_id=scene_id, cfg=cfg, graph_cfg=graph_cfg,
+                detection_model=detection_model, sam_predictor=sam_predictor,
+                clip_model=clip_model, clip_preprocess=clip_preprocess,
+                clip_tokenizer=clip_tokenizer,
+            )
 
         if start_pts is not None and not np.isnan(start_pts).any():
             pts = start_pts.copy()
@@ -1166,17 +1175,18 @@ def run_episode_two_tier(
             pts = start_pts_random.copy()
             angle = 0.0
 
-        from src.geom import get_scene_bnds
-        vol_bnds, _ = get_scene_bnds(scene.pathfinder, floor_height=pts[1])
-        tsdf_planner = TSDFPlanner(
-            vol_bnds=vol_bnds,
-            voxel_size=cfg.tsdf_grid_size,
-            floor_height=pts[1],
-            floor_height_offset=0,
-            pts_init=pts,
-            init_clearance=cfg.init_clearance * 2,
-            save_visualization=bool(getattr(cfg, "save_visualization", False)),
-        )
+        if tsdf_planner is None:
+            from src.geom import get_scene_bnds
+            vol_bnds, _ = get_scene_bnds(scene.pathfinder, floor_height=pts[1])
+            tsdf_planner = TSDFPlanner(
+                vol_bnds=vol_bnds,
+                voxel_size=cfg.tsdf_grid_size,
+                floor_height=pts[1],
+                floor_height_offset=0,
+                pts_init=pts,
+                init_clearance=cfg.init_clearance * 2,
+                save_visualization=bool(getattr(cfg, "save_visualization", False)),
+            )
 
         memory_store = MemoryStore(
             output_dir=os.path.join(output_dir, f"memory_{question_id}")
@@ -1582,6 +1592,10 @@ def run_episode_two_tier(
             # Check submit_answer
             if action.action_type == "submit_answer":
                 result["answer"] = action.answer or ""
+                result["final_pts"] = pts
+                result["final_angle"] = angle
+                result["_scene"] = scene
+                result["_tsdf_planner"] = tsdf_planner
                 result["success"] = True
                 result["steps_taken"] = silent_perception_step._step_counter
                 result["path_length"] = executor.path_length
@@ -1658,6 +1672,10 @@ def run_episode_two_tier(
         )
         result["answer"] = fallback_action.answer or "unanswerable"
         result["success"] = "unanswerable" not in result["answer"].lower()
+        result["final_pts"] = pts
+        result["final_angle"] = angle
+        result["_scene"] = scene
+        result["_tsdf_planner"] = tsdf_planner
         result["steps_taken"] = silent_perception_step._step_counter
         result["rounds_used"] = max_planner_rounds
         if run_logger is not None:
