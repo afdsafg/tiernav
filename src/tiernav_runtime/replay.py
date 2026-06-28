@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 from .contracts import EpisodeRequest, EpisodeState, NonNegativeInt, Observation
 from .events import EpisodeEvent
@@ -14,12 +14,39 @@ from .events import EpisodeEvent
 _NON_NEGATIVE_INT_ADAPTER = TypeAdapter(NonNegativeInt)
 
 
+class LegacyEpisodeStart(BaseModel):
+    """Strict fallback schema for legacy start events without embedded requests."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scene_id: str
+    task_name: str
+    task_mode: str
+    prompt: str
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    obj: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError(f"duplicate key: {key}")
+        obj[key] = value
+    return obj
+
+
+def _load_json_object(line: str) -> dict[str, Any]:
+    value = json.loads(line, object_pairs_hook=_reject_duplicate_keys)
+    if not isinstance(value, dict):
+        raise ValueError("event log line must be a JSON object")
+    return value
+
+
 def _load_events(path: str | Path) -> list[EpisodeEvent]:
     events: list[EpisodeEvent] = []
     with Path(path).open("r", encoding="utf-8") as fh:
         for line in fh:
             if line.strip():
-                events.append(EpisodeEvent.model_validate(json.loads(line)))
+                events.append(EpisodeEvent.model_validate(_load_json_object(line)))
     sequences = [event.sequence for event in events]
     if any(current <= previous for previous, current in zip(sequences, sequences[1:])):
         raise ValueError(f"event sequence is out of order: {sequences}")
@@ -98,13 +125,14 @@ def replay_events(path: str | Path) -> EpisodeState:
                     pose=request.initial_pose,
                 )
             else:
+                legacy_start = LegacyEpisodeStart.model_validate(event.payload)
                 expected_episode_id = event.episode_id
                 state = EpisodeState(
                     episode_id=event.episode_id,
-                    scene_id=_optional_str(event.payload, "scene_id", ""),
-                    task_name=_optional_str(event.payload, "task_name", ""),
-                    task_mode=event.payload.get("task_mode", "question_answering"),
-                    prompt=_optional_str(event.payload, "prompt", ""),
+                    scene_id=legacy_start.scene_id,
+                    task_name=legacy_start.task_name,
+                    task_mode=legacy_start.task_mode,
+                    prompt=legacy_start.prompt,
                 )
         elif state is None:
             raise ValueError(f"event log starts with {event.event_type}, not episode_started")
