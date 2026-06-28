@@ -102,3 +102,15 @@ def after_critic(state: dict) -> str:
     if state.get("critic_veto", False):
         return "planner"
     return "loop_guard"
+
+
+def after_check_arrival(state: dict) -> str:
+    """Conditional edge after check_arrival_node.
+
+    GOATBench: within_target=True → "submit" (成功终止)
+               within_target=False → "memory_update" (继续探索)
+    AEQA: is_terminal_task=False → 恒 "memory_update"（check_arrival 返回空 dict）
+    """
+    if state.get("is_terminal_task", False) and state.get("within_target", False):
+        return "submit"
+    return "memory_update"
