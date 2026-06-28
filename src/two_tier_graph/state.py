@@ -121,3 +121,18 @@ class TwoTierState(TypedDict):
     error: str
     terminal: bool
     failure_type: str                        # "budget_exhausted_answered" | "premature_submit" | ...
+
+    # ── 任务分类（note_node 设置一次；AEQA 路径默认 question）──
+    task_type: str                    # "question" | "object_nav" | "description_nav" | "image_nav"
+    task_plan: str                    # note 生成的自然语言计划
+    is_terminal_task: bool            # False=回答(AEQA), True=导航(GOATBench)
+
+    # ── 跨 subtask（GOATBench；AEQA 未用）──
+    subtask_index: int
+    subtask_total: int
+    cross_subtask_notes: Annotated[list, operator.add]
+
+    # ── GOATBench proximity（check_arrival / executor 写入）──
+    observed_goal_positions: Annotated[list, operator.add]  # executor 每步 append 匹配目标世界坐标
+    within_target: bool
+    agent_target_distance: float
