@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from enum import Enum
 from numbers import Real
-from typing import Annotated, Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, field_validator
+from typing_extensions import TypeAliasType
 
 
 SCHEMA_VERSION = "tiernav.runtime.v1"
@@ -16,6 +17,12 @@ FiniteFloat = Annotated[StrictFloat, Field(allow_inf_nan=False)]
 PoseValues = dict[str, FiniteFloat]
 MetricsMap = dict[str, FiniteFloat]
 ConfidenceScore = Annotated[StrictFloat, Field(ge=0.0, le=1.0, allow_inf_nan=False)]
+JsonScalar = Union[None, bool, str, int, float]
+JsonValue = TypeAliasType(
+    "JsonValue",
+    "Union[None, bool, str, int, float, list[JsonValue], dict[str, JsonValue]]",
+)
+JsonObject = dict[str, JsonValue]
 
 
 class RuntimeModel(BaseModel):
@@ -53,7 +60,7 @@ class RunSpec(RuntimeModel):
     max_rounds: NonNegativeInt = 10
     max_steps: NonNegativeInt = 50
     ablation: AblationConfig = Field(default_factory=AblationConfig)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: JsonObject = Field(default_factory=dict)
 
 
 class EpisodeRequest(RuntimeModel):
@@ -65,7 +72,7 @@ class EpisodeRequest(RuntimeModel):
     task_name: str
     task_mode: TaskMode
     prompt: str
-    goal_metadata: dict[str, Any] = Field(default_factory=dict)
+    goal_metadata: JsonObject = Field(default_factory=dict)
     initial_pose: PoseValues = Field(default_factory=dict)
     output_dir: str = ""
 
@@ -78,7 +85,7 @@ class Observation(RuntimeModel):
     object_ids: list[str] = Field(default_factory=list)
     room_id: Optional[str] = None
     pose: PoseValues = Field(default_factory=dict)
-    raw: dict[str, Any] = Field(default_factory=dict)
+    raw: JsonObject = Field(default_factory=dict)
 
 
 class PlannerDecision(RuntimeModel):
@@ -88,7 +95,7 @@ class PlannerDecision(RuntimeModel):
     reasoning: str = ""
     expected: str = ""
     confidence: ConfidenceScore = 0.0
-    arguments: dict[str, Any] = Field(default_factory=dict)
+    arguments: JsonObject = Field(default_factory=dict)
 
     @field_validator("confidence", mode="before")
     @classmethod
@@ -112,7 +119,7 @@ class ToolCall(RuntimeModel):
 
     call_id: str
     action_type: str
-    arguments: dict[str, Any] = Field(default_factory=dict)
+    arguments: JsonObject = Field(default_factory=dict)
 
 
 class ToolResult(RuntimeModel):

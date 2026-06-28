@@ -77,6 +77,23 @@ def test_run_spec_rejects_string_max_rounds():
         raise AssertionError("RunSpec accepted string max_rounds")
 
 
+def test_run_spec_rejects_non_json_metadata_values():
+    try:
+        RunSpec(
+            run_id="run-001",
+            task_name="aeqa",
+            dataset_split="dev",
+            output_dir="/tmp/tiernav",
+            planner_provider="mimo",
+            planner_model="qwen3-vl-flash",
+            metadata={"obj": object()},
+        )
+    except ValidationError as exc:
+        assert "metadata" in str(exc)
+    else:
+        raise AssertionError("RunSpec accepted a non-JSON metadata value")
+
+
 @pytest.mark.parametrize(
     ("model_type", "kwargs"),
     [
@@ -166,6 +183,22 @@ def test_episode_request_rejects_non_finite_initial_pose_values():
         raise AssertionError("EpisodeRequest accepted a non-finite initial_pose value")
 
 
+def test_episode_request_rejects_non_json_goal_metadata_values():
+    try:
+        EpisodeRequest(
+            episode_id="ep-1",
+            scene_id="scene",
+            task_name="aeqa",
+            task_mode="question_answering",
+            prompt="What color is the chair?",
+            goal_metadata={"obj": object()},
+        )
+    except ValidationError as exc:
+        assert "goal_metadata" in str(exc)
+    else:
+        raise AssertionError("EpisodeRequest accepted a non-JSON goal_metadata value")
+
+
 def test_planner_decision_round_trip_json():
     decision = PlannerDecision(
         action_type="navigate_to_object",
@@ -180,6 +213,32 @@ def test_planner_decision_round_trip_json():
 
     assert decoded.action_type == "navigate_to_object"
     assert decoded.arguments["object_name"] == "chair"
+
+
+def test_planner_decision_rejects_non_json_arguments_values():
+    try:
+        PlannerDecision(action_type="search", arguments={"obj": object()})
+    except ValidationError as exc:
+        assert "arguments" in str(exc)
+    else:
+        raise AssertionError("PlannerDecision accepted a non-JSON arguments value")
+
+
+def test_planner_decision_serializes_nested_json_arguments():
+    decision = PlannerDecision(
+        action_type="search",
+        arguments={
+            "target": {
+                "name": "chair",
+                "attributes": ["red", 2, True, None],
+            }
+        },
+    )
+
+    payload = json.loads(decision.model_dump_json())
+
+    assert payload["arguments"]["target"]["name"] == "chair"
+    assert payload["arguments"]["target"]["attributes"] == ["red", 2, True, None]
 
 
 def test_planner_decision_clamps_out_of_range_confidence():
@@ -326,6 +385,19 @@ def test_tool_contracts_validate_terminal_results():
     assert result.observation.summary == "Answer submitted."
 
 
+def test_tool_call_rejects_non_json_arguments_values():
+    try:
+        ToolCall(
+            call_id="tool-1",
+            action_type="submit_answer",
+            arguments={"obj": object()},
+        )
+    except ValidationError as exc:
+        assert "arguments" in str(exc)
+    else:
+        raise AssertionError("ToolCall accepted a non-JSON arguments value")
+
+
 def test_tool_result_rejects_non_finite_metric_values():
     try:
         ToolResult(
@@ -446,6 +518,15 @@ def test_observation_rejects_unknown_nested_fields():
         assert "unknown_nested_field" in str(exc)
     else:
         raise AssertionError("Observation accepted an unexpected nested field")
+
+
+def test_observation_rejects_non_json_raw_values():
+    try:
+        Observation(raw={"obj": object()})
+    except ValidationError as exc:
+        assert "raw" in str(exc)
+    else:
+        raise AssertionError("Observation accepted a non-JSON raw value")
 
 
 def test_observation_rejects_non_finite_pose_values():
