@@ -4,7 +4,7 @@ import os
 INVALID_SCENE_ID = []
 
 # about chatgpt api
-END_POINT = ""
+END_POINT = os.getenv("END_POINT", "")
 OPENAI_KEY = os.getenv("OPENAI_KEY", "")
 
 # HMGE Agent API

@@ -63,6 +63,34 @@ PLANNER_SYSTEM_PROMPT = (
 )
 
 
+# Navigation variant — goal-driven navigation instead of QA
+PLANNER_NAV_SYSTEM_PROMPT = (
+    "You are an embodied AI agent navigating indoor scenes to reach a goal.\n"
+    "You make strategic decisions about where to navigate next.\n\n"
+    "Available Actions:\n"
+    "1. explore_panorama: Take an 8-view panorama to re-orient. Arguments: {}\n"
+    "2. navigate_to_object: Navigate toward an object you can SEE in one of the attached current-view snapshots.\n"
+    '   Arguments: {{"snapshot_id": "step12_view1", "object_name": "<target object>"}}\n'
+    "3. explore_seed: Navigate to a seed viewpoint.\n"
+    '   Arguments: {{"seed_id": "3"}}\n'
+    "4. explore_frontier: Navigate to an unexplored frontier.\n"
+    '   Arguments: {{"frontier_id": "14"}}\n'
+    "5. submit_answer: Indicate that you have reached the goal location. This is terminal.\n"
+    '   Arguments: {{"snapshot_id": "step12_view1", "answer": "reached_goal"}}\n\n'
+    "Decision Rules:\n"
+    "- The attached current-view snapshots are the visual observations after the previous action.\n"
+    "- If you believe you have reached the goal, choose submit_answer immediately.\n"
+    "- For navigate_to_object, return the snapshot_id that shows the object, object_name, and reasoning.\n"
+    "- For submit_answer, return the snapshot_id showing the goal and reasoning.\n"
+    "- Exploration/navigation actions must include expected: what you expect the selected action to verify or accomplish next.\n"
+    "- submit_answer is terminal and does not need expected.\n"
+    "- Do not call navigate_to_object again for the same object after arriving near it unless a different view is explicitly needed.\n\n"
+    "Response Format:\n"
+    '{{"reasoning": "why this action", "expected": "omit for submit_answer", "action": "<action_name>", "arguments": {{...}}, "confidence": 0.8}}\n\n'
+    "Always output valid JSON. Only use actions from the list above."
+)
+
+
 # ── Planner class ─────────────────────────────────────────────────────────
 
 class Planner:
@@ -73,10 +101,13 @@ class Planner:
         api_key: str,
         base_url: str,
         model_name: str = QWEN_PLANNER_MODEL,
+        goal_type: Optional[str] = None,
     ):
         self.api_key = api_key
         self.base_url = base_url
         self.model_name = model_name
+        self.goal_type = goal_type
+        self.system_prompt = PLANNER_NAV_SYSTEM_PROMPT if goal_type else PLANNER_SYSTEM_PROMPT
 
     def decide(
         self,
@@ -91,7 +122,7 @@ class Planner:
     ) -> PlannerAction:
         """Call VLM with 4-component prompt, parse action."""
         prompt = self.build_prompt(question, history, scene, progress, actions)
-        messages = [{"role": "system", "content": PLANNER_SYSTEM_PROMPT}]
+        messages = [{"role": "system", "content": self.system_prompt}]
 
         images = []
         if image_b64s:
@@ -225,4 +256,11 @@ class Planner:
     def _call_api(self, messages: list[dict]) -> str:
         """Use the proven call_vlm from agent_workflow (mimo-v2.5 compatible)."""
         from src.agent_workflow import call_vlm
-        return call_vlm(messages, max_tokens=4096, temperature=0.3)
+        return call_vlm(
+            messages,
+            max_tokens=4096,
+            temperature=0.3,
+            api_key=self.api_key,
+            base_url=self.base_url,
+            model_name=self.model_name,
+        )
