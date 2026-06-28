@@ -755,6 +755,44 @@ def executor_node(state: TwoTierState, config) -> dict:
     }
 
 
+def check_arrival_node(state: TwoTierState, config) -> dict:
+    """Node 5b: GOATBench 几何终止判定。
+
+    AEQA 路径（is_terminal_task=False）：返回空 dict，直通 memory_update。
+    GOATBench 路径：用 observed_goal_positions（观测反投影，非真值）计算
+    欧氏距离（xz 平面），< 1m 则 within_target=True。
+
+    目标位置来源：executor_node 每步从 scene.objects[oid]["bbox"].center
+    提取匹配目标位置 append 到 observed_goal_positions。
+
+    Reads: is_terminal_task, observed_goal_positions, pose。
+    Writes: within_target, agent_target_distance。
+    """
+    import numpy as np
+
+    if not state.get("is_terminal_task", False):
+        return {}  # AEQA 直通
+
+    observed = state.get("observed_goal_positions", [])
+    if not observed:
+        return {"within_target": False, "agent_target_distance": float("inf")}
+
+    pts = state["pose"]["pts"]
+    if pts is None:
+        return {"within_target": False, "agent_target_distance": float("inf")}
+
+    # 欧氏距离，xz 平面（忽略 y 轴高度差）
+    min_dist = min(
+        float(np.linalg.norm(np.asarray(pts)[[0, 2]] - np.asarray(g)[[0, 2]]))
+        for g in observed
+    )
+
+    return {
+        "within_target": min_dist < 1.0,
+        "agent_target_distance": min_dist,
+    }
+
+
 def memory_update_node(state: TwoTierState, config) -> dict:
     """Node 6: notebook + scene-graph + rejected-region marking.
 
