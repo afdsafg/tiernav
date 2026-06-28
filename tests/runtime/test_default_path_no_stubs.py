@@ -22,3 +22,9 @@ def test_default_tools_dispatch_without_not_implemented(action_type):
     assert isinstance(result, ToolResult)
     assert result.call_id == "audit-1"
     assert result.action_type == action_type
+    # Name blacklist (test_default_registry_excludes_stubs) and behavior check
+    # here are complementary: the name filter blocks known stubs by name, while
+    # these assertions ensure dispatch actually succeeds rather than returning a
+    # ToolResult that merely wraps a swallowed NotImplementedError.
+    assert result.ok is True, f"{action_type} returned error: {result.error!r}"
+    assert "NotImplementedError" not in result.error
