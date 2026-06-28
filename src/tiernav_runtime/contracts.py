@@ -198,20 +198,21 @@ PublicModel = Literal[
     "ContextSection",
 ]
 
+PUBLIC_MODELS: dict[str, type[BaseModel]] = {
+    "RunSpec": RunSpec,
+    "EpisodeRequest": EpisodeRequest,
+    "EpisodeState": EpisodeState,
+    "EpisodeResult": EpisodeResult,
+    "PlannerDecision": PlannerDecision,
+    "ToolCall": ToolCall,
+    "ToolResult": ToolResult,
+    "Observation": Observation,
+    "MemoryPack": MemoryPack,
+    "ContextSection": ContextSection,
+}
+
 
 def dump_runtime_json_schemas() -> dict[str, dict[str, Any]]:
     """Return JSON schemas for public runtime contracts."""
 
-    models: dict[str, type[BaseModel]] = {
-        "RunSpec": RunSpec,
-        "EpisodeRequest": EpisodeRequest,
-        "EpisodeState": EpisodeState,
-        "EpisodeResult": EpisodeResult,
-        "PlannerDecision": PlannerDecision,
-        "ToolCall": ToolCall,
-        "ToolResult": ToolResult,
-        "Observation": Observation,
-        "MemoryPack": MemoryPack,
-        "ContextSection": ContextSection,
-    }
-    return {name: model.model_json_schema() for name, model in models.items()}
+    return {name: model.model_json_schema() for name, model in PUBLIC_MODELS.items()}

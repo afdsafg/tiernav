@@ -1,6 +1,7 @@
 """Contract tests for the TierNav runtime."""
 import json
 
+import pytest
 from pydantic import ValidationError
 
 from src.tiernav_runtime.contracts import (
@@ -40,21 +41,62 @@ def test_run_spec_has_research_ablation_axes():
     assert spec.ablation.active_memory_query is True
 
 
-def test_run_spec_rejects_unknown_schema_version():
+@pytest.mark.parametrize(
+    ("model_type", "kwargs"),
+    [
+        (
+            RunSpec,
+            {
+                "run_id": "run-001",
+                "task_name": "aeqa",
+                "dataset_split": "dev",
+                "output_dir": "/tmp/tiernav",
+                "planner_provider": "mimo",
+                "planner_model": "qwen3-vl-flash",
+            },
+        ),
+        (
+            EpisodeRequest,
+            {
+                "episode_id": "ep-1",
+                "scene_id": "scene",
+                "task_name": "aeqa",
+                "task_mode": "question_answering",
+                "prompt": "What color is the chair?",
+            },
+        ),
+        (
+            EpisodeState,
+            {
+                "episode_id": "ep-1",
+                "scene_id": "scene",
+                "task_name": "aeqa",
+                "task_mode": "question_answering",
+                "prompt": "Where is the lamp?",
+            },
+        ),
+        (
+            EpisodeResult,
+            {
+                "episode_id": "ep-1",
+                "scene_id": "scene",
+                "task_name": "aeqa",
+                "task_mode": "question_answering",
+                "success": True,
+            },
+        ),
+    ],
+)
+def test_versioned_models_reject_unknown_schema_version(model_type, kwargs):
     try:
-        RunSpec(
+        model_type(
             schema_version="future.v99",
-            run_id="run-001",
-            task_name="aeqa",
-            dataset_split="dev",
-            output_dir="/tmp/tiernav",
-            planner_provider="mimo",
-            planner_model="qwen3-vl-flash",
+            **kwargs,
         )
     except ValidationError as exc:
         assert "schema_version" in str(exc)
     else:
-        raise AssertionError("RunSpec accepted an unknown schema_version")
+        raise AssertionError(f"{model_type.__name__} accepted an unknown schema_version")
 
 
 def test_episode_request_rejects_unknown_task_mode():
@@ -146,6 +188,24 @@ def test_episode_state_rejects_unknown_top_level_fields():
         assert "unexpected" in str(exc)
     else:
         raise AssertionError("EpisodeState accepted an unexpected top-level field")
+
+
+def test_episode_state_rejects_unknown_nested_current_decision_fields():
+    try:
+        EpisodeState(
+            episode_id="ep-1",
+            scene_id="scene",
+            task_name="aeqa",
+            task_mode="question_answering",
+            prompt="Where is the lamp?",
+            current_decision={"action_type": "look", "unexpected": "bad"},
+        )
+    except ValidationError as exc:
+        message = str(exc)
+        assert "current_decision" in message
+        assert "unexpected" in message
+    else:
+        raise AssertionError("EpisodeState accepted an unexpected current_decision field")
 
 
 def test_tool_contracts_validate_terminal_results():
