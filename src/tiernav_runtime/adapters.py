@@ -86,6 +86,7 @@ class GOATBenchTaskAdapter:
             "answer": result.answer,
             "steps_taken": result.steps_taken,
             "rounds_used": result.rounds_used,
+            "path_length": result.path_length,
             "failure_type": result.failure_type,
             "error": result.error,
         }

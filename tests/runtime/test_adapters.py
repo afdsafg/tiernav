@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import inspect
-from typing import get_type_hints
 
 import pytest
 from pydantic import BaseModel
@@ -195,6 +194,7 @@ def test_goatbench_exports_navigation_payload():
     assert payload["answer"] == ""
     assert payload["steps_taken"] == 12
     assert payload["rounds_used"] == 5
+    assert payload["path_length"] == 7.25
     assert payload["failure_type"] == "timeout"
     assert payload["error"] == "max_rounds_exceeded"
 
