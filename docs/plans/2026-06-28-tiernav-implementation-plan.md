@@ -67,8 +67,8 @@ Phase D (Phase 3 extensions — mostly parallel)
 | | A3: Merge + verify | ✅ done | — | Clean main |
 | **B** | B1: Wire scoring | ✅ done | `f02e9d0` | `scripts/score_aeqa.py` |
 | | B2a: Legacy baseline | ✅ done | LLM Match 50.6%, Acc 50.61%, SPL 48.33% | 41/41, 0 failed, ~1h43m |
-| | B2b: Langgraph baseline | 🔄 running | — | Server 2 PID 2150: 16/41 done + 1 caught-crash |
-| | B3: GOATBench baseline | ⏳ pending | — | Run on server 1 after shutdown |
+| | B2b: Langgraph baseline | ✅ done | LLM Match 50.6%, Acc 50.61%, SPL 36.82% | 40/41, 1 failed. Acc matches legacy, SPL lower (longer paths) |
+| | B3: GOATBench baseline | ⏳ pending | — | Servers shut down. Run locally or on new server |
 | **C** | C0a-C6 (all levers) | ✅ done | `c26ac80`→`d26d2b3` | 8 tasks, 33 tests total |
 | **D** | D1: Claude provider | ✅ done | `42709fd` | Native tool-use + cache_control |
 | | D2: PixelNavigateTool | ✅ done | — | Pixel→backproject stub |
