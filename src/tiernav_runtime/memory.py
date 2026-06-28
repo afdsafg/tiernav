@@ -11,8 +11,6 @@ always snapshot ids derived from real :class:`Observation` image_ids.
 """
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import Field
 
 from .contracts import ConfidenceScore, MemoryPack, Observation, RuntimeModel
