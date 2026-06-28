@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
 from pydantic import Field
 
-from .contracts import RuntimeModel, SCHEMA_VERSION
+from .contracts import JsonObject, RuntimeModel, SCHEMA_VERSION
 
 
 class EpisodeEvent(RuntimeModel):
@@ -17,14 +16,14 @@ class EpisodeEvent(RuntimeModel):
     event_type: str
     sequence: int
     timestamp_utc: str
-    payload: dict[str, Any] = Field(default_factory=dict)
+    payload: JsonObject = Field(default_factory=dict)
 
 
 def make_event(
     episode_id: str,
     event_type: str,
     sequence: int,
-    payload: dict[str, Any] | None = None,
+    payload: JsonObject | None = None,
 ) -> EpisodeEvent:
     """Create a validated event envelope."""
 
