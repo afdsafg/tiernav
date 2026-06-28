@@ -27,14 +27,16 @@ from typing import Callable
 
 from langgraph.graph import END, START, StateGraph
 
-from .edges import after_critic, after_guard, after_memory, after_submit
+from .edges import after_check_arrival, after_critic, after_guard, after_memory, after_submit
 from .nodes import (
     build_context_node,
+    check_arrival_node,
     critic_node,
     executor_node,
     init_node,
     loop_guard_node,
     memory_update_node,
+    note_node,
     planner_node,
     stall_recovery_node,
     submit_node,
@@ -55,24 +57,39 @@ def build_two_tier_graph():
     """
     g: StateGraph = StateGraph(TwoTierState)
 
-    # ── Add 8 nodes ──
+    # ── Add 10 nodes ──
+    g.add_node("note", note_node)
     g.add_node("init", init_node)
     g.add_node("build_context", build_context_node)
     g.add_node("planner", planner_node)
     g.add_node("critic", critic_node)  # D3: planner→critic→loop_guard
     g.add_node("loop_guard", loop_guard_node)
     g.add_node("executor", executor_node)
+    g.add_node("check_arrival", check_arrival_node)
     g.add_node("memory_update", memory_update_node)
     g.add_node("stall_recovery", stall_recovery_node)  # P3
     g.add_node("submit", submit_node)
 
     # ── Static edges ──
-    g.add_edge(START, "init")
+    g.add_edge(START, "note")
+    g.add_edge("note", "init")
     g.add_edge("init", "build_context")
     g.add_edge("build_context", "planner")
     g.add_edge("planner", "critic")  # D3: critic between planner & loop_guard
-    g.add_edge("executor", "memory_update")
+    g.add_edge("executor", "check_arrival")
     g.add_edge("stall_recovery", "build_context")  # P3: hint injected, retry
+
+    # ── Conditional edge: after_check_arrival (GOATBench proximity) ──
+    # GOATBench: within_target → submit (终止); 否则 → memory_update (继续)
+    # AEQA: is_terminal_task=False → 恒 memory_update
+    g.add_conditional_edges(
+        "check_arrival",
+        after_check_arrival,
+        {
+            "submit": "submit",
+            "memory_update": "memory_update",
+        },
+    )
 
     # ── Conditional edge: after_critic (leaves critic_node, D3) ──
     # planner→loop_guard replaced by planner→critic→(after_critic)→loop_guard|planner
