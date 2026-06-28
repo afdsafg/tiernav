@@ -1,7 +1,9 @@
 """Pure functional workflow routing policy for the TierNav runtime."""
 from __future__ import annotations
 
-from src.tiernav_runtime.contracts import EpisodeState, RuntimeModel, RunSpec
+from pydantic import Field
+
+from .contracts import EpisodeState, RuntimeModel, RunSpec
 
 
 class PolicyDecision(RuntimeModel):
@@ -10,7 +12,7 @@ class PolicyDecision(RuntimeModel):
     route: str
     reason: str
     hint: str = ""
-    metadata: dict[str, str] = {}
+    metadata: dict[str, str] = Field(default_factory=dict)
 
 
 class WorkflowPolicy:
