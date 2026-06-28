@@ -273,6 +273,52 @@ def _first_available_action(
 # ── Node functions ───────────────────────────────────────────────────────
 
 
+def note_node(state: TwoTierState, config) -> dict:
+    """Node 0: 任务分类与拆解。
+
+    AEQA 路径（goal_type=None）：输出 task_type="question"，is_terminal_task=False。
+    GOATBench 路径：按 goal_type 分类，结合 cross_subtask_notes 生成计划。
+
+    Phase-1 确定性分类器，不调 LLM。未来 lever：LLM 拆解（Phase C/D）。
+
+    Reads: question, cross_subtask_notes (从 resources 读 goal_type)。
+    Writes: task_type, task_plan, is_terminal_task, subtask_index, subtask_total。
+    """
+    res: Resources = config["configurable"]["resources"]
+    goal_type = res.goal_type
+    prior_notes = state.get("cross_subtask_notes", [])
+
+    if goal_type is None:
+        # AEQA 路径
+        return {
+            "task_type": "question",
+            "task_plan": f"Explore scene, gather evidence, answer: {state['question']}",
+            "is_terminal_task": False,
+            "subtask_index": 0,
+            "subtask_total": 1,
+        }
+
+    # GOATBench 路径
+    type_map = {
+        "object": "object_nav",
+        "description": "description_nav",
+        "image": "image_nav",
+    }
+    task_type = type_map.get(goal_type, "object_nav")
+
+    prior_summary = ""
+    if prior_notes:
+        prior_summary = "\nPrior subtasks found: " + "; ".join(prior_notes[-3:])
+
+    return {
+        "task_type": task_type,
+        "task_plan": f"Navigate to {goal_type} target: {state['question']}{prior_summary}",
+        "is_terminal_task": True,
+        "subtask_index": state.get("subtask_index", 0),
+        "subtask_total": state.get("subtask_total", 1),
+    }
+
+
 def init_node(state: TwoTierState, config) -> dict:
     """Node 1: episode setup + initial panorama.
 
