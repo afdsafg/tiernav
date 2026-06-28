@@ -10,8 +10,7 @@ contracts module. No external services, no LangGraph, no fabricated evidence.
 from __future__ import annotations
 
 import hashlib
-import json
-from typing import Any, Mapping
+from typing import Any
 
 from src.tiernav_runtime.contracts import ContextSection, EpisodeState
 
@@ -93,12 +92,11 @@ class ContextCompiler:
     def compile(
         self,
         state: EpisodeState,
-        action_schema: Mapping[str, Any],
+        action_schema: str,
         include_memory: bool = True,
         policy_hint: str = "",
     ) -> list[ContextSection]:
         task_instruction = self._render_task_instruction(state)
-        action_schema_text = self._render_action_schema(action_schema)
         memory_text = self._render_memory(state, include_memory)
         recent_trace = self._render_recent_trace(state)
         observation_text = self._render_observation(state)
@@ -106,12 +104,21 @@ class ContextCompiler:
 
         return [
             _section("task_instruction", task_instruction, cacheable=True),
-            _section("action_schema", action_schema_text, cacheable=True),
+            _section("action_schema", action_schema, cacheable=True),
             _section("memory_index", memory_text, cacheable=True),
             _section("recent_trace", recent_trace, cacheable=False),
             _section("current_observation", observation_text, cacheable=False),
             _section("policy_hint", policy_text, cacheable=False),
         ]
+
+    def render_prompt(self, sections: list[ContextSection]) -> str:
+        """Render sections to a model-facing prompt.
+
+        Instance method delegating to the module-level :func:`render_prompt`
+        so callers may use the planned ``compiler.render_prompt(compiler.compile(...))``
+        form. The module-level function is retained for backwards compatibility.
+        """
+        return render_prompt(sections)
 
     @staticmethod
     def _render_task_instruction(state: EpisodeState) -> str:
@@ -123,10 +130,6 @@ class ContextCompiler:
             f"prompt: {state.prompt}",
         ]
         return "\n".join(lines)
-
-    @staticmethod
-    def _render_action_schema(action_schema: Mapping[str, Any]) -> str:
-        return json.dumps(action_schema, sort_keys=True, ensure_ascii=False)
 
     @staticmethod
     def _render_memory(state: EpisodeState, include_memory: bool) -> str:

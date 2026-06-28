@@ -40,11 +40,15 @@ def _state_with_memory() -> EpisodeState:
     )
 
 
+# A string action_schema, matching the plan's `action_schema: str` contract.
+SCHEMA = "submit_answer, explore_frontier"
+
+
 def test_sections_ordered_cacheable_first():
     state = _state_with_memory()
     compiler = ContextCompiler()
 
-    sections = compiler.compile(state, action_schema={"actions": ["look"]})
+    sections = compiler.compile(state, action_schema=SCHEMA)
 
     names = [s.name for s in sections]
     expected_order = [
@@ -66,7 +70,7 @@ def test_required_section_names_present():
     state = _state_with_memory()
     compiler = ContextCompiler()
 
-    sections = compiler.compile(state, action_schema={"actions": ["look"]})
+    sections = compiler.compile(state, action_schema=SCHEMA)
 
     names = {s.name for s in sections}
     assert {
@@ -79,12 +83,26 @@ def test_required_section_names_present():
     } <= names
 
 
+def test_action_schema_section_content_is_raw_string():
+    """action_schema is `str`; section.content must equal the input verbatim,
+    not a JSON-quoted string."""
+    state = _state_with_memory()
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema="schema")
+
+    action = {s.name: s for s in sections}["action_schema"]
+    assert action.content == "schema"
+    # Guard against the old json.dumps behavior regressing.
+    assert action.content != '"schema"'
+
+
 def test_same_input_gives_stable_content_hash():
     state = _state_with_memory()
     compiler = ContextCompiler()
 
-    a = compiler.compile(state, action_schema={"actions": ["look"]})
-    b = compiler.compile(state, action_schema={"actions": ["look"]})
+    a = compiler.compile(state, action_schema=SCHEMA)
+    b = compiler.compile(state, action_schema=SCHEMA)
 
     assert [s.content_hash for s in a] == [s.content_hash for s in b]
     # Hashes are non-empty sha256 hex strings for non-empty content.
@@ -98,8 +116,8 @@ def test_content_hash_changes_when_section_content_changes_but_unchanged_preserv
     state = _state_with_memory()
     compiler = ContextCompiler()
 
-    schema_v1 = {"actions": ["look"]}
-    schema_v2 = {"actions": ["look", "navigate"]}
+    schema_v1 = "submit_answer, explore_frontier"
+    schema_v2 = "submit_answer, explore_frontier, look_around"
     a = compiler.compile(state, action_schema=schema_v1)
     b = compiler.compile(state, action_schema=schema_v2)
 
@@ -119,8 +137,8 @@ def test_include_memory_false_makes_memory_index_content_empty():
     state = _state_with_memory()
     compiler = ContextCompiler()
 
-    sections_with = compiler.compile(state, action_schema={"actions": []}, include_memory=True)
-    sections_without = compiler.compile(state, action_schema={"actions": []}, include_memory=False)
+    sections_with = compiler.compile(state, action_schema=SCHEMA, include_memory=True)
+    sections_without = compiler.compile(state, action_schema=SCHEMA, include_memory=False)
 
     mem_with = {s.name: s for s in sections_with}["memory_index"]
     mem_without = {s.name: s for s in sections_without}["memory_index"]
@@ -137,7 +155,7 @@ def test_memory_index_empty_when_no_memory_pack():
     state = _base_state()  # no memory_pack
     compiler = ContextCompiler()
 
-    sections = compiler.compile(state, action_schema={"actions": []}, include_memory=True)
+    sections = compiler.compile(state, action_schema=SCHEMA, include_memory=True)
 
     mem = {s.name: s for s in sections}["memory_index"]
     assert mem.content == ""
@@ -147,7 +165,7 @@ def test_current_observation_contains_last_observation_summary():
     state = _state_with_memory()
     compiler = ContextCompiler()
 
-    sections = compiler.compile(state, action_schema={"actions": []})
+    sections = compiler.compile(state, action_schema=SCHEMA)
 
     obs = {s.name: s for s in sections}["current_observation"]
     assert "A red chair is visible near the window." in obs.content
@@ -158,7 +176,7 @@ def test_recent_trace_contains_round_and_step_index():
     state = _state_with_memory()
     compiler = ContextCompiler()
 
-    sections = compiler.compile(state, action_schema={"actions": []})
+    sections = compiler.compile(state, action_schema=SCHEMA)
 
     trace = {s.name: s for s in sections}["recent_trace"]
     assert "1" in trace.content  # round_index
@@ -170,9 +188,9 @@ def test_policy_hint_is_dynamic_and_rendered_when_non_empty():
     state = _state_with_memory()
     compiler = ContextCompiler()
 
-    sections_empty = compiler.compile(state, action_schema={"actions": []}, policy_hint="")
+    sections_empty = compiler.compile(state, action_schema=SCHEMA, policy_hint="")
     sections_set = compiler.compile(
-        state, action_schema={"actions": []}, policy_hint="Prefer explore actions."
+        state, action_schema=SCHEMA, policy_hint="Prefer explore actions."
     )
 
     hint_empty = {s.name: s for s in sections_empty}["policy_hint"]
@@ -192,7 +210,7 @@ def test_render_prompt_includes_memory_pack_and_observation():
     state = _state_with_memory()
     compiler = ContextCompiler()
 
-    sections = compiler.compile(state, action_schema={"actions": ["look"]})
+    sections = compiler.compile(state, action_schema=SCHEMA)
     rendered = render_prompt(sections)
 
     assert "Lamp previously seen on the desk." in rendered
@@ -200,14 +218,44 @@ def test_render_prompt_includes_memory_pack_and_observation():
     assert "Reuse the desk landmark." in rendered
     assert "A red chair is visible near the window." in rendered
     # action schema content present too.
-    assert "look" in rendered
+    assert "explore_frontier" in rendered
+
+
+def test_instance_render_prompt_matches_module_render_prompt():
+    """compiler.render_prompt (instance method) must equal module-level render_prompt."""
+    state = _state_with_memory()
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema=SCHEMA)
+
+    assert compiler.render_prompt(sections) == render_prompt(sections)
+
+
+def test_instance_render_prompt_chained_with_compile():
+    """Plan-style call: compiler.render_prompt(compiler.compile(state, action_schema=...)).
+
+    Must not raise AttributeError and must include memory + observation content.
+    """
+    state = _state_with_memory()
+    compiler = ContextCompiler()
+
+    prompt = compiler.render_prompt(compiler.compile(state, action_schema="schema"))
+
+    assert isinstance(prompt, str)
+    # Memory pack content rendered.
+    assert "Lamp previously seen on the desk." in prompt
+    # Observation content rendered.
+    assert "A red chair is visible near the window." in prompt
+    # action_schema string rendered verbatim, not JSON-quoted.
+    assert "schema" in prompt
+    assert '"schema"' not in prompt
 
 
 def test_render_prompt_skips_empty_sections():
     state = _base_state()  # no memory_pack, empty observation summary
     compiler = ContextCompiler()
 
-    sections = compiler.compile(state, action_schema={"actions": []})
+    sections = compiler.compile(state, action_schema=SCHEMA)
     rendered = render_prompt(sections)
 
     # Empty policy_hint and empty memory_index must not contribute a header with
@@ -223,7 +271,7 @@ def test_token_estimate_zero_for_empty_content_positive_otherwise():
     state = _base_state()
     compiler = ContextCompiler()
 
-    sections = compiler.compile(state, action_schema={"actions": []})
+    sections = compiler.compile(state, action_schema=SCHEMA)
 
     for s in sections:
         if s.content == "":
@@ -236,7 +284,7 @@ def test_returns_context_section_instances():
     state = _state_with_memory()
     compiler = ContextCompiler()
 
-    sections = compiler.compile(state, action_schema={"actions": []})
+    sections = compiler.compile(state, action_schema=SCHEMA)
 
     assert all(isinstance(s, ContextSection) for s in sections)
 
@@ -245,7 +293,7 @@ def test_content_hash_empty_string_for_empty_content():
     state = _base_state()  # empty memory, empty observation summary
     compiler = ContextCompiler()
 
-    sections = compiler.compile(state, action_schema={"actions": []})
+    sections = compiler.compile(state, action_schema=SCHEMA)
 
     for s in sections:
         if s.content == "":
