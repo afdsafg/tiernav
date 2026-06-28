@@ -306,10 +306,13 @@ def run_episode_two_tier_langgraph(
         result["n_filtered_snapshots"] = 0
         result["n_total_snapshots"] = 0
         # ── Threaded resources + GOATBench return fields ──
+        # _-prefixed: non-serializable heavy objects (filtered out of JSON by runners)
         result["_notebook"] = resources.notebook
         result["_scene_graph"] = resources.scene_graph
-        result["final_pts"] = final_state.get("pose", {}).get("pts")
-        result["final_angle"] = final_state.get("pose", {}).get("angle", 0.0)
+        # final_pts: ndarray → list for JSON safety; GOATBench runner converts back
+        _pts = final_state.get("pose", {}).get("pts")
+        result["final_pts"] = _pts.tolist() if hasattr(_pts, "tolist") else _pts
+        result["final_angle"] = float(final_state.get("pose", {}).get("angle", 0.0))
         result["cross_subtask_notes"] = final_state.get(
             "cross_subtask_notes", cross_subtask_notes or []
         )
