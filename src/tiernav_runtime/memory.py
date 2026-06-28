@@ -155,8 +155,9 @@ class MemoryService:
         Retrieval is deterministic keyword matching: a snapshot matches if any
         whitespace token of ``query`` appears in its summary (case-insensitive).
         On no direct match but existing snapshots, fall back to the first few
-        snapshots so context stays reusable. Aggregates all hypothesis
-        supports/contradictions.
+        snapshots so context stays reusable — but downgrade ``confidence`` to
+        0.0 so downstream consumers can distinguish this best-effort reuse from
+        a real hit. Aggregates all hypothesis supports/contradictions.
         """
         if not self.enabled:
             return MemoryPack(query=query, summary="")
@@ -169,8 +170,12 @@ class MemoryService:
                 if tokens & summary_tokens:
                     matched.append(snap)
 
+        is_fallback = False
         if not matched and self.snapshots:
             # fallback: first few existing snapshots, keep context reusable.
+            # Marked as fallback so confidence is downgraded and the hint
+            # signals to downstream that this is not a direct hit.
+            is_fallback = True
             matched = list(self.snapshots.values())[:3]
 
         if not matched:
@@ -178,7 +183,7 @@ class MemoryService:
 
         summary = " | ".join(s.summary for s in matched if s.summary)
         evidence_ids = [s.snapshot_id for s in matched]
-        reuse_hint = self._reuse_hint(matched)
+        reuse_hint = self._reuse_hint(matched, is_fallback=is_fallback)
 
         supports: list[str] = []
         contradictions: list[str] = []
@@ -186,7 +191,9 @@ class MemoryService:
             supports.extend(hyp.supports)
             contradictions.extend(hyp.contradictions)
 
-        confidence: ConfidenceScore = 1.0 if matched else 0.0
+        # Only a direct keyword match justifies high confidence. Fallback reuse
+        # returns real snapshot ids but is not evidence the query was answered.
+        confidence: ConfidenceScore = 0.0 if is_fallback else 1.0
 
         return MemoryPack(
             query=query,
@@ -199,7 +206,7 @@ class MemoryService:
         )
 
     @staticmethod
-    def _reuse_hint(matched: list[SnapshotNode]) -> str:
+    def _reuse_hint(matched: list[SnapshotNode], *, is_fallback: bool = False) -> str:
         if not matched:
             return ""
         room_ids: list[str] = []
@@ -207,4 +214,7 @@ class MemoryService:
             if s.room_id not in room_ids:
                 room_ids.append(s.room_id)
         rooms = ", ".join(room_ids)
+        if is_fallback:
+            base = "fallback reuse of existing snapshots"
+            return f"{base} from room(s): {rooms}" if rooms else base
         return f"reuse snapshots from room(s): {rooms}" if rooms else "reuse existing snapshots"

@@ -181,6 +181,45 @@ def test_no_direct_query_match_falls_back_to_existing_snapshots():
     pack = mem.query("garage")
     assert pack.evidence_ids  # fallback returned some snapshot
     assert "snap-img-1" in pack.evidence_ids
+    # fallback is not a direct hit: confidence must be downgraded so downstream
+    # consumers can tell this is a best-effort reuse, not a real match.
+    assert pack.confidence == 0.0
+
+
+def test_direct_query_match_has_high_confidence():
+    mem = MemoryService(enabled=True)
+    mem.update_from_observation(
+        _observation(
+            summary="a red sofa beside the window",
+            image_ids=["img-1"],
+            object_ids=["obj-sofa"],
+            room_id="room-A",
+        ),
+        action_type="explore_frontier",
+        round_index=0,
+    )
+    pack = mem.query("sofa")
+    assert "snap-img-1" in pack.evidence_ids
+    # direct keyword match -> high confidence, strictly above fallback's 0.0
+    assert pack.confidence > 0.0
+
+
+def test_fallback_reuse_hint_signals_best_effort():
+    mem = MemoryService(enabled=True)
+    mem.update_from_observation(
+        _observation(
+            summary="a kitchen counter with fruits",
+            image_ids=["img-1"],
+            object_ids=["obj-counter"],
+            room_id="room-K",
+        ),
+        action_type="explore_frontier",
+        round_index=0,
+    )
+    pack = mem.query("garage")
+    assert pack.evidence_ids
+    # downstream must be able to distinguish fallback from direct hit via hint
+    assert "fallback" in pack.reuse_hint.lower()
 
 
 def test_disabled_memory_does_not_record_hypothesis():
