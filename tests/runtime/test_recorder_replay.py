@@ -552,3 +552,88 @@ def test_replay_rejects_non_string_legacy_start_fields(tmp_path):
         replay_events(path)
 
     assert "scene_id" in str(exc.value)
+
+
+def test_episode_event_rejects_numeric_timestamp():
+    with pytest.raises(ValidationError):
+        EpisodeEvent(
+            schema_version="tiernav.runtime.v1",
+            episode_id="ep-1",
+            event_type="episode_started",
+            sequence=1,
+            timestamp_utc=0,
+            payload={},
+        )
+
+
+def test_episode_event_rejects_naive_timestamp_string():
+    with pytest.raises(ValidationError):
+        EpisodeEvent(
+            schema_version="tiernav.runtime.v1",
+            episode_id="ep-1",
+            event_type="episode_started",
+            sequence=1,
+            timestamp_utc="2026-01-01T00:00:00",
+            payload={},
+        )
+
+
+def test_episode_event_rejects_non_utc_offset_timestamp():
+    with pytest.raises(ValidationError):
+        EpisodeEvent(
+            schema_version="tiernav.runtime.v1",
+            episode_id="ep-1",
+            event_type="episode_started",
+            sequence=1,
+            timestamp_utc="2026-01-01T08:00:00+08:00",
+            payload={},
+        )
+
+
+def test_make_event_serializes_timestamp_as_utc_string():
+    event = make_event("ep-1", "episode_started", 1, {"scene_id": "scene"})
+
+    serialized = json.loads(event.model_dump_json())["timestamp_utc"]
+
+    assert isinstance(serialized, str)
+    assert serialized.endswith("+00:00") or serialized.endswith("Z")
+
+
+def test_replay_rejects_extra_sibling_key_with_request(tmp_path):
+    path = tmp_path / "events.jsonl"
+    req = _request()
+    path.write_text(
+        make_event(
+            "ep-1",
+            "episode_started",
+            1,
+            {"request": req.model_dump(mode="json"), "extra": "x"},
+        ).model_dump_json() + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises((ValueError, ValidationError)):
+        replay_events(path)
+
+
+def test_replay_rejects_mixed_request_and_legacy_start_fields(tmp_path):
+    path = tmp_path / "events.jsonl"
+    req = _request()
+    path.write_text(
+        make_event(
+            "ep-1",
+            "episode_started",
+            1,
+            {
+                "request": req.model_dump(mode="json"),
+                "scene_id": "scene",
+                "task_name": "aeqa",
+                "task_mode": "question_answering",
+                "prompt": "What is on the table?",
+            },
+        ).model_dump_json() + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises((ValueError, ValidationError)):
+        replay_events(path)

@@ -25,6 +25,17 @@ class LegacyEpisodeStart(BaseModel):
     prompt: str
 
 
+class RequestEpisodeStart(BaseModel):
+    """Strict start schema for events carrying an embedded EpisodeRequest.
+
+    extra=forbid ensures request + sibling legacy/extra keys are rejected.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    request: EpisodeRequest
+
+
 class ToolResultReceivedPayload(BaseModel):
     """Strict payload schema for tool result events."""
 
@@ -145,8 +156,8 @@ def replay_events(path: str | Path) -> EpisodeState:
             if state is not None:
                 raise ValueError("event log contains repeated episode_started")
             if "request" in event.payload:
-                request_payload = event.payload["request"]
-                request = EpisodeRequest.model_validate(request_payload)
+                request_start = RequestEpisodeStart.model_validate(event.payload)
+                request = request_start.request
                 expected_episode_id = request.episode_id
                 _require_episode_match(event, expected_episode_id)
                 state = EpisodeState(
