@@ -96,6 +96,24 @@ def test_planner_decision_clamps_out_of_range_confidence():
     assert decision_high.confidence == 1.0
 
 
+def test_planner_decision_rejects_string_confidence():
+    try:
+        PlannerDecision(action_type="search", confidence="0.6")
+    except ValidationError as exc:
+        assert "confidence" in str(exc)
+    else:
+        raise AssertionError("PlannerDecision accepted string confidence")
+
+
+def test_planner_decision_rejects_bool_confidence():
+    try:
+        PlannerDecision(action_type="search", confidence=True)
+    except ValidationError as exc:
+        assert "confidence" in str(exc)
+    else:
+        raise AssertionError("PlannerDecision accepted bool confidence")
+
+
 def test_episode_state_serializes_without_numpy_objects():
     state = EpisodeState(
         episode_id="ep-1",

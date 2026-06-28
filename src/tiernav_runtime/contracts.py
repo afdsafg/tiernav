@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from numbers import Real
 from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -89,6 +90,9 @@ class PlannerDecision(RuntimeModel):
     def _confidence_in_range(cls, value: Any) -> Any:
         if value is None:
             return value
+
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise ValueError("confidence must be a numeric value")
 
         value = float(value)
         if value < 0.0:
