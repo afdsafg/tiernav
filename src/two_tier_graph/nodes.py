@@ -1074,6 +1074,37 @@ def submit_node(state: TwoTierState, config) -> dict:
     Writes: answer, success, steps_taken, rounds_used, terminal=True,
             failure_type.
     """
+    # ── GOATBench 分流：导航任务终态由 proximity 判定 ──
+    if state.get("is_terminal_task", False):
+        within = state.get("within_target", False)
+        dist = state.get("agent_target_distance", -1.0)
+        res_sub: Resources = config["configurable"]["resources"]
+        from src.agent_tools import silent_perception_step
+        steps_taken = int(getattr(silent_perception_step, "_step_counter", 0))
+        logger.info(f"GOATBench subtask {state.get('subtask_index', 0)} terminal: within={within} dist={dist:.2f}m")
+        note_summary = f"subtask {state.get('subtask_index', 0)}: {'reached' if within else 'missed'} {state.get('task_type', '')} (dist={dist:.2f}m)"
+        if res_sub.run_logger is not None:
+            if res_sub.scene_graph is not None:
+                try:
+                    res_sub.run_logger.save_graph(res_sub.question_id, res_sub.scene_graph.to_dict())
+                except Exception:
+                    pass
+            res_sub.run_logger.finalize_episode(
+                episode_id=res_sub.question_id, success=within,
+                answer="reached_goal" if within else "not_found",
+                num_steps=int(steps_taken),
+            )
+        return {
+            "answer": "reached_goal" if within else "not_found",
+            "success": within,
+            "steps_taken": steps_taken,
+            "rounds_used": state["rounds_used"],
+            "terminal": True,
+            "failure_type": "" if within else "target_not_reached",
+            "cross_subtask_notes": [note_summary],
+        }
+
+    # ── AEQA 路径（现有逻辑不变）──
     res: Resources = config["configurable"]["resources"]
     action: PlannerAction = state["current_action"]
 
