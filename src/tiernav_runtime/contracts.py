@@ -45,8 +45,8 @@ class RunSpec(RuntimeModel):
     planner_provider: str
     planner_model: str
     seed: int = 0
-    max_rounds: int = 10
-    max_steps: int = 50
+    max_rounds: int = Field(default=10, ge=0)
+    max_steps: int = Field(default=50, ge=0)
     ablation: AblationConfig = Field(default_factory=AblationConfig)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -130,7 +130,7 @@ class MemoryPack(RuntimeModel):
     evidence_ids: list[str] = Field(default_factory=list)
     supports: list[str] = Field(default_factory=list)
     contradictions: list[str] = Field(default_factory=list)
-    confidence: float = 0.0
+    confidence: ConfidenceScore = 0.0
     reuse_hint: str = ""
 
 
@@ -140,7 +140,7 @@ class ContextSection(RuntimeModel):
     name: str
     content: str
     cacheable: bool
-    token_estimate: int = 0
+    token_estimate: int = Field(default=0, ge=0)
     content_hash: str = ""
 
 
@@ -153,8 +153,8 @@ class EpisodeState(RuntimeModel):
     task_name: str
     task_mode: TaskMode
     prompt: str
-    round_index: int = 0
-    step_index: int = 0
+    round_index: int = Field(default=0, ge=0)
+    step_index: int = Field(default=0, ge=0)
     pose: dict[str, float] = Field(default_factory=dict)
     current_decision: Optional[PlannerDecision] = None
     last_observation: Observation = Field(default_factory=Observation)
@@ -176,9 +176,9 @@ class EpisodeResult(RuntimeModel):
     task_mode: TaskMode
     success: bool
     answer: str = ""
-    steps_taken: int = 0
-    rounds_used: int = 0
-    path_length: float = 0.0
+    steps_taken: int = Field(default=0, ge=0)
+    rounds_used: int = Field(default=0, ge=0)
+    path_length: float = Field(default=0.0, ge=0.0)
     failure_type: str = ""
     error: str = ""
     event_log_path: str = ""

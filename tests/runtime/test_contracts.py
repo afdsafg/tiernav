@@ -6,9 +6,11 @@ from pydantic import ValidationError
 
 from src.tiernav_runtime.contracts import (
     AblationConfig,
+    ContextSection,
     EpisodeRequest,
     EpisodeResult,
     EpisodeState,
+    MemoryPack,
     Observation,
     PlannerDecision,
     RunSpec,
@@ -39,6 +41,23 @@ def test_run_spec_has_research_ablation_axes():
     assert spec.ablation.continuous_context is True
     assert spec.ablation.spatial_memory is True
     assert spec.ablation.active_memory_query is True
+
+
+def test_run_spec_rejects_negative_max_rounds():
+    try:
+        RunSpec(
+            run_id="run-001",
+            task_name="aeqa",
+            dataset_split="dev",
+            output_dir="/tmp/tiernav",
+            planner_provider="mimo",
+            planner_model="qwen3-vl-flash",
+            max_rounds=-1,
+        )
+    except ValidationError as exc:
+        assert "max_rounds" in str(exc)
+    else:
+        raise AssertionError("RunSpec accepted a negative max_rounds")
 
 
 @pytest.mark.parametrize(
@@ -174,6 +193,22 @@ def test_episode_state_serializes_without_numpy_objects():
     assert payload["round_index"] == 1
 
 
+def test_episode_state_rejects_negative_step_index():
+    try:
+        EpisodeState(
+            episode_id="ep-1",
+            scene_id="scene",
+            task_name="aeqa",
+            task_mode="question_answering",
+            prompt="Where is the lamp?",
+            step_index=-1,
+        )
+    except ValidationError as exc:
+        assert "step_index" in str(exc)
+    else:
+        raise AssertionError("EpisodeState accepted a negative step_index")
+
+
 def test_episode_state_rejects_unknown_top_level_fields():
     try:
         EpisodeState(
@@ -260,6 +295,38 @@ def test_episode_result_has_common_metrics_for_aeqa_and_goatbench():
     assert result.event_log_path.endswith("events.jsonl")
 
 
+def test_episode_result_rejects_negative_steps_taken():
+    try:
+        EpisodeResult(
+            episode_id="ep-1",
+            scene_id="scene",
+            task_name="aeqa",
+            task_mode="question_answering",
+            success=True,
+            steps_taken=-1,
+        )
+    except ValidationError as exc:
+        assert "steps_taken" in str(exc)
+    else:
+        raise AssertionError("EpisodeResult accepted negative steps_taken")
+
+
+def test_episode_result_rejects_negative_path_length():
+    try:
+        EpisodeResult(
+            episode_id="ep-1",
+            scene_id="scene",
+            task_name="aeqa",
+            task_mode="question_answering",
+            success=True,
+            path_length=-0.5,
+        )
+    except ValidationError as exc:
+        assert "path_length" in str(exc)
+    else:
+        raise AssertionError("EpisodeResult accepted negative path_length")
+
+
 def test_observation_rejects_unknown_nested_fields():
     try:
         Observation(summary="Seen chair", unknown_nested_field="x")
@@ -267,6 +334,34 @@ def test_observation_rejects_unknown_nested_fields():
         assert "unknown_nested_field" in str(exc)
     else:
         raise AssertionError("Observation accepted an unexpected nested field")
+
+
+@pytest.mark.parametrize("invalid_confidence", [float("nan"), float("inf")])
+def test_memory_pack_rejects_non_finite_confidence(invalid_confidence):
+    try:
+        MemoryPack(query="lamp", summary="Seen lamp", confidence=invalid_confidence)
+    except ValidationError as exc:
+        assert "confidence" in str(exc)
+    else:
+        raise AssertionError("MemoryPack accepted a non-finite confidence")
+
+
+def test_memory_pack_serializes_numeric_confidence_as_json_number():
+    pack = MemoryPack(query="lamp", summary="Seen lamp", confidence=0.6)
+
+    payload = json.loads(pack.model_dump_json())
+
+    assert payload["confidence"] == 0.6
+    assert payload["confidence"] is not None
+
+
+def test_context_section_rejects_negative_token_estimate():
+    try:
+        ContextSection(name="planner", content="...", cacheable=True, token_estimate=-1)
+    except ValidationError as exc:
+        assert "token_estimate" in str(exc)
+    else:
+        raise AssertionError("ContextSection accepted a negative token_estimate")
 
 
 def test_json_schema_dump_contains_all_public_models():
@@ -285,5 +380,11 @@ def test_json_schema_dump_contains_all_public_models():
         "ContextSection",
     }
     assert schemas["RunSpec"]["type"] == "object"
+    assert schemas["RunSpec"]["properties"]["max_rounds"]["minimum"] == 0
+    assert schemas["EpisodeState"]["properties"]["step_index"]["minimum"] == 0
+    assert schemas["EpisodeResult"]["properties"]["path_length"]["minimum"] == 0.0
     assert schemas["PlannerDecision"]["properties"]["confidence"]["minimum"] == 0.0
     assert schemas["PlannerDecision"]["properties"]["confidence"]["maximum"] == 1.0
+    assert schemas["MemoryPack"]["properties"]["confidence"]["minimum"] == 0.0
+    assert schemas["MemoryPack"]["properties"]["confidence"]["maximum"] == 1.0
+    assert schemas["ContextSection"]["properties"]["token_estimate"]["minimum"] == 0
