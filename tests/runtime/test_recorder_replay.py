@@ -58,6 +58,18 @@ def test_episode_event_rejects_wrong_schema_version():
         )
 
 
+def test_episode_event_rejects_invalid_timestamp():
+    with pytest.raises(ValidationError):
+        EpisodeEvent(
+            schema_version="tiernav.runtime.v1",
+            episode_id="ep-1",
+            event_type="episode_started",
+            sequence=1,
+            timestamp_utc="not-a-timestamp",
+            payload={},
+        )
+
+
 @pytest.mark.parametrize("bad_sequence", [0, -1, "1", True])
 def test_make_event_rejects_invalid_sequences(bad_sequence):
     with pytest.raises(ValidationError):
@@ -367,6 +379,98 @@ def test_replay_accepts_full_legacy_start_payload(tmp_path):
     assert state.task_name == "aeqa"
     assert state.prompt == "What is on the table?"
     assert state.success is True
+
+
+def test_replay_rejects_event_after_terminal_tool_result(tmp_path):
+    path = tmp_path / "events.jsonl"
+    req = _request()
+    path.write_text(
+        "\n".join([
+            make_event("ep-1", "episode_started", 1, {"request": req.model_dump(mode="json")}).model_dump_json(),
+            make_event("ep-1", "episode_ended", 2, {"success": True, "answer": "mug"}).model_dump_json(),
+            make_event(
+                "ep-1",
+                "tool_result_received",
+                3,
+                {"observation": Observation(summary="late").model_dump(mode="json")},
+            ).model_dump_json(),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises((ValueError, ValidationError)) as exc:
+        replay_events(path)
+
+    assert "terminal" in str(exc.value).lower() or "episode_ended" in str(exc.value)
+
+
+def test_replay_rejects_second_episode_ended_after_terminal(tmp_path):
+    path = tmp_path / "events.jsonl"
+    req = _request()
+    path.write_text(
+        "\n".join([
+            make_event("ep-1", "episode_started", 1, {"request": req.model_dump(mode="json")}).model_dump_json(),
+            make_event("ep-1", "episode_ended", 2, {"success": True, "answer": "mug"}).model_dump_json(),
+            make_event("ep-1", "episode_ended", 3, {"success": False, "answer": "other"}).model_dump_json(),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises((ValueError, ValidationError)) as exc:
+        replay_events(path)
+
+    assert "terminal" in str(exc.value).lower() or "episode_ended" in str(exc.value)
+
+
+def test_replay_rejects_empty_tool_result_payload(tmp_path):
+    path = tmp_path / "events.jsonl"
+    req = _request()
+    path.write_text(
+        "\n".join([
+            make_event("ep-1", "episode_started", 1, {"request": req.model_dump(mode="json")}).model_dump_json(),
+            make_event("ep-1", "tool_result_received", 2, {}).model_dump_json(),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises((ValueError, ValidationError)) as exc:
+        replay_events(path)
+
+    assert "observation" in str(exc.value)
+
+
+def test_replay_rejects_extra_policy_transitioned_key(tmp_path):
+    path = tmp_path / "events.jsonl"
+    req = _request()
+    path.write_text(
+        "\n".join([
+            make_event("ep-1", "episode_started", 1, {"request": req.model_dump(mode="json")}).model_dump_json(),
+            make_event("ep-1", "policy_transitioned", 2, {"failure_type": "stall", "extra": "x"}).model_dump_json(),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises((ValueError, ValidationError)) as exc:
+        replay_events(path)
+
+    assert "extra" in str(exc.value) or "extra_forbidden" in str(exc.value)
+
+
+def test_replay_rejects_extra_episode_ended_key(tmp_path):
+    path = tmp_path / "events.jsonl"
+    req = _request()
+    path.write_text(
+        "\n".join([
+            make_event("ep-1", "episode_started", 1, {"request": req.model_dump(mode="json")}).model_dump_json(),
+            make_event("ep-1", "episode_ended", 2, {"success": True, "answer": "mug", "extra": "x"}).model_dump_json(),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises((ValueError, ValidationError)) as exc:
+        replay_events(path)
+
+    assert "extra" in str(exc.value) or "extra_forbidden" in str(exc.value)
 
 
 def test_replay_rejects_string_success_in_terminal_payload(tmp_path):

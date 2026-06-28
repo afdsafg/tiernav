@@ -19,7 +19,7 @@ class EpisodeEvent(RuntimeModel):
     episode_id: str
     event_type: str
     sequence: PositiveSequence
-    timestamp_utc: str
+    timestamp_utc: datetime
     payload: JsonObject = Field(default_factory=dict)
 
 

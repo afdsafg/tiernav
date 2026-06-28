@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, StrictBool, TypeAdapter, ValidationError
 
 from .contracts import EpisodeRequest, EpisodeState, NonNegativeInt, Observation
 from .events import EpisodeEvent
@@ -23,6 +23,34 @@ class LegacyEpisodeStart(BaseModel):
     task_name: str
     task_mode: str
     prompt: str
+
+
+class ToolResultReceivedPayload(BaseModel):
+    """Strict payload schema for tool result events."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    observation: Observation
+    step_index: Optional[NonNegativeInt] = None
+
+
+class PolicyTransitionedPayload(BaseModel):
+    """Strict payload schema for policy transition events."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    failure_type: str
+
+
+class EpisodeEndedPayload(BaseModel):
+    """Strict payload schema for terminal episode events."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    success: StrictBool
+    answer: str = ""
+    round_index: Optional[NonNegativeInt] = None
+    step_index: Optional[NonNegativeInt] = None
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -98,6 +126,11 @@ def _optional_non_negative_int(payload: dict[str, Any], field_name: str, current
     return _require_non_negative_int(payload, field_name)
 
 
+def _require_not_terminal(state: EpisodeState, event_type: str) -> None:
+    if state.terminal:
+        raise ValueError(f"cannot apply {event_type} after terminal state")
+
+
 def replay_events(path: str | Path) -> EpisodeState:
     """Rebuild materialized state from an event log."""
 
@@ -138,18 +171,24 @@ def replay_events(path: str | Path) -> EpisodeState:
             raise ValueError(f"event log starts with {event.event_type}, not episode_started")
         else:
             _require_episode_match(event, expected_episode_id or state.episode_id)
+            _require_not_terminal(state, event.event_type)
             if event.event_type == "tool_result_received":
-                if "observation" in event.payload:
-                    state.last_observation = Observation.model_validate(event.payload["observation"])
-                state.step_index = _optional_non_negative_int(event.payload, "step_index", state.step_index)
+                payload = ToolResultReceivedPayload.model_validate(event.payload)
+                state.last_observation = payload.observation
+                if payload.step_index is not None:
+                    state.step_index = payload.step_index
             elif event.event_type == "policy_transitioned":
-                state.failure_type = _optional_str(event.payload, "failure_type", state.failure_type)
+                payload = PolicyTransitionedPayload.model_validate(event.payload)
+                state.failure_type = payload.failure_type
             elif event.event_type == "episode_ended":
+                payload = EpisodeEndedPayload.model_validate(event.payload)
                 state.terminal = True
-                state.success = _require_bool(event.payload, "success")
-                state.answer = _optional_str(event.payload, "answer", "")
-                state.round_index = _optional_non_negative_int(event.payload, "round_index", state.round_index)
-                state.step_index = _optional_non_negative_int(event.payload, "step_index", state.step_index)
+                state.success = payload.success
+                state.answer = payload.answer
+                if payload.round_index is not None:
+                    state.round_index = payload.round_index
+                if payload.step_index is not None:
+                    state.step_index = payload.step_index
             else:
                 raise ValueError(f"unsupported event_type: {event.event_type}")
 
