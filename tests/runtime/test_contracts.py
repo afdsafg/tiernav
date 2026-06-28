@@ -40,6 +40,23 @@ def test_run_spec_has_research_ablation_axes():
     assert spec.ablation.active_memory_query is True
 
 
+def test_run_spec_rejects_unknown_schema_version():
+    try:
+        RunSpec(
+            schema_version="future.v99",
+            run_id="run-001",
+            task_name="aeqa",
+            dataset_split="dev",
+            output_dir="/tmp/tiernav",
+            planner_provider="mimo",
+            planner_model="qwen3-vl-flash",
+        )
+    except ValidationError as exc:
+        assert "schema_version" in str(exc)
+    else:
+        raise AssertionError("RunSpec accepted an unknown schema_version")
+
+
 def test_episode_request_rejects_unknown_task_mode():
     try:
         EpisodeRequest(
@@ -71,6 +88,14 @@ def test_planner_decision_round_trip_json():
     assert decoded.arguments["object_name"] == "chair"
 
 
+def test_planner_decision_clamps_out_of_range_confidence():
+    decision_low = PlannerDecision(action_type="search", confidence=-0.2)
+    decision_high = PlannerDecision(action_type="search", confidence=1.7)
+
+    assert decision_low.confidence == 0.0
+    assert decision_high.confidence == 1.0
+
+
 def test_episode_state_serializes_without_numpy_objects():
     state = EpisodeState(
         episode_id="ep-1",
@@ -87,6 +112,22 @@ def test_episode_state_serializes_without_numpy_objects():
 
     assert payload["pose"]["x"] == 1.0
     assert payload["round_index"] == 1
+
+
+def test_episode_state_rejects_unknown_top_level_fields():
+    try:
+        EpisodeState(
+            episode_id="ep-1",
+            scene_id="scene",
+            task_name="aeqa",
+            task_mode="question_answering",
+            prompt="Where is the lamp?",
+            unexpected=True,
+        )
+    except ValidationError as exc:
+        assert "unexpected" in str(exc)
+    else:
+        raise AssertionError("EpisodeState accepted an unexpected top-level field")
 
 
 def test_tool_contracts_validate_terminal_results():
@@ -125,6 +166,15 @@ def test_episode_result_has_common_metrics_for_aeqa_and_goatbench():
     assert result.event_log_path.endswith("events.jsonl")
 
 
+def test_observation_rejects_unknown_nested_fields():
+    try:
+        Observation(summary="Seen chair", unknown_nested_field="x")
+    except ValidationError as exc:
+        assert "unknown_nested_field" in str(exc)
+    else:
+        raise AssertionError("Observation accepted an unexpected nested field")
+
+
 def test_json_schema_dump_contains_all_public_models():
     schemas = dump_runtime_json_schemas()
 
@@ -133,3 +183,5 @@ def test_json_schema_dump_contains_all_public_models():
     assert "EpisodeState" in schemas
     assert "EpisodeResult" in schemas
     assert schemas["RunSpec"]["type"] == "object"
+    assert schemas["PlannerDecision"]["properties"]["confidence"]["minimum"] == 0.0
+    assert schemas["PlannerDecision"]["properties"]["confidence"]["maximum"] == 1.0

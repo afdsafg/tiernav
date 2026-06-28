@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 SCHEMA_VERSION = "tiernav.runtime.v1"
+SchemaVersion = Literal["tiernav.runtime.v1"]
+ConfidenceScore = Annotated[float, Field(ge=0.0, le=1.0)]
 
 
 class RuntimeModel(BaseModel):
@@ -34,7 +36,7 @@ class AblationConfig(RuntimeModel):
 class RunSpec(RuntimeModel):
     """Configuration for a reproducible run or sweep member."""
 
-    schema_version: str = SCHEMA_VERSION
+    schema_version: SchemaVersion = SCHEMA_VERSION
     run_id: str
     task_name: str
     dataset_split: str
@@ -51,7 +53,7 @@ class RunSpec(RuntimeModel):
 class EpisodeRequest(RuntimeModel):
     """Task-adapted input for one episode."""
 
-    schema_version: str = SCHEMA_VERSION
+    schema_version: SchemaVersion = SCHEMA_VERSION
     episode_id: str
     scene_id: str
     task_name: str
@@ -79,12 +81,16 @@ class PlannerDecision(RuntimeModel):
     action_type: str
     reasoning: str = ""
     expected: str = ""
-    confidence: float = 0.0
+    confidence: ConfidenceScore = 0.0
     arguments: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("confidence")
+    @field_validator("confidence", mode="before")
     @classmethod
-    def _confidence_in_range(cls, value: float) -> float:
+    def _confidence_in_range(cls, value: Any) -> Any:
+        if value is None:
+            return value
+
+        value = float(value)
         if value < 0.0:
             return 0.0
         if value > 1.0:
@@ -137,7 +143,7 @@ class ContextSection(RuntimeModel):
 class EpisodeState(RuntimeModel):
     """Materialized graph state. The event log remains the source of truth."""
 
-    schema_version: str = SCHEMA_VERSION
+    schema_version: SchemaVersion = SCHEMA_VERSION
     episode_id: str
     scene_id: str
     task_name: str
@@ -159,7 +165,7 @@ class EpisodeState(RuntimeModel):
 class EpisodeResult(RuntimeModel):
     """Unified output from one episode."""
 
-    schema_version: str = SCHEMA_VERSION
+    schema_version: SchemaVersion = SCHEMA_VERSION
     episode_id: str
     scene_id: str
     task_name: str
