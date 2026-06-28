@@ -4,18 +4,20 @@ Deterministic fakes only: no external services, no network. Exercises the
 planned examples (tool-then-submit, round-budget fallback) plus extra
 coverage for context compilation, memory query, tool-failure resilience,
 and the default ContextCompiler on RuntimeServices.
+
+The graph is driven through the planned LangGraph invoke contract:
+``build_runtime_graph()`` takes no arguments and services are injected via
+``config={"configurable": {"services": services}}``. The final graph output
+is a plain JSON dict, so assertions read ``final_state["state"]["..."]``.
 """
 from __future__ import annotations
 
 from typing import Optional
 
-import pytest
-
 from src.tiernav_runtime.context import ContextCompiler
 from src.tiernav_runtime.contracts import (
     AblationConfig,
     EpisodeRequest,
-    EpisodeState,
     Observation,
     PlannerDecision,
     RunSpec,
@@ -94,14 +96,17 @@ def _services(planner: FakePlanner) -> RuntimeServices:
     )
 
 
-def _run(services: RuntimeServices, spec: RunSpec, request: EpisodeRequest) -> EpisodeState:
-    """Invoke the compiled graph and return the final EpisodeState."""
-    app = build_runtime_graph(services)
-    initial: RuntimeGraphState = {"spec": spec, "request": request, "state": None}
-    result = app.invoke(initial)
-    state = result["state"]
-    assert isinstance(state, EpisodeState)
-    return state
+def _run(
+    services: RuntimeServices, spec: RunSpec, request: EpisodeRequest
+) -> dict:
+    """Invoke the compiled graph via the config contract; return final dict."""
+    graph = build_runtime_graph()
+    final_state = graph.invoke(
+        {"spec": spec.model_dump(mode="json"), "request": request.model_dump(mode="json")},
+        config={"configurable": {"services": services}},
+    )
+    assert isinstance(final_state, dict)
+    return final_state
 
 
 # ── Plan examples ─────────────────────────────────────────────────────────
@@ -121,12 +126,32 @@ def test_tool_then_submit_returns_answer():
             ),
         ]
     )
-    state = _run(_services(planner), _spec(), _request())
+    final_state = _run(_services(planner), _spec(), _request())
+    state = final_state["state"]
 
-    assert state.terminal is True
-    assert state.success is True
-    assert state.answer == "mug"
-    assert state.step_index == 1
+    assert state["terminal"] is True
+    assert state["success"] is True
+    assert state["answer"] == "mug"
+    assert state["step_index"] == 1
+
+
+def test_single_submit_answer_step_index_is_one():
+    """A single submit_answer route (no tool dispatch) leaves step_index at 0.
+
+    submit_answer routes policy->finalize without running execute_tool, so
+    no step is taken. This complements test_tool_then_submit_returns_answer
+    which asserts step_index == 1 after exactly one tool dispatch.
+    """
+    planner = FakePlanner(
+        [PlannerDecision(action_type="submit_answer", arguments={"answer": "mug"})]
+    )
+    final_state = _run(_services(planner), _spec(), _request())
+    state = final_state["state"]
+
+    assert state["terminal"] is True
+    assert state["success"] is True
+    assert state["answer"] == "mug"
+    assert state["step_index"] == 0
 
 
 def test_round_budget_fallback():
@@ -134,12 +159,15 @@ def test_round_budget_fallback():
     planner = FakePlanner(
         [PlannerDecision(action_type="explore_frontier")]
     )
-    state = _run(_services(planner), _spec(max_rounds=1), _request())
+    final_state = _run(_services(planner), _spec(max_rounds=1), _request())
+    state = final_state["state"]
 
-    assert state.terminal is True
-    assert state.success is False
-    assert state.answer == "unanswerable"
-    assert state.failure_type == "round_budget"
+    assert state["terminal"] is True
+    assert state["success"] is False
+    assert state["answer"] == "unanswerable"
+    assert state["failure_type"] == "round_budget"
+    # policy key is carried into the final graph output.
+    assert final_state["policy"]["reason"] == "round_budget"
 
 
 # ── Extra coverage ────────────────────────────────────────────────────────
@@ -149,13 +177,15 @@ def test_context_sections_written_and_prompt_nonempty():
     planner = FakePlanner(
         [PlannerDecision(action_type="submit_answer", arguments={"answer": "sofa"})]
     )
-    state = _run(_services(planner), _spec(), _request())
+    final_state = _run(_services(planner), _spec(), _request())
+    state = final_state["state"]
 
-    assert state.context_sections, "context_sections must be populated"
-    names = [s.name for s in state.context_sections]
+    assert state["context_sections"], "context_sections must be populated"
+    names = [s["name"] for s in state["context_sections"]]
     assert "task_instruction" in names
     assert "action_schema" in names
-    assert state.prompt, "prompt must be non-empty"
+    assert state["prompt"], "prompt must be non-empty"
+    assert final_state["prompt"] == state["prompt"]
 
 
 def test_memory_pack_present_when_active_memory_query_true():
@@ -173,11 +203,12 @@ def test_memory_pack_present_when_active_memory_query_true():
         round_index=0,
     )
     spec = _spec(ablation=AblationConfig(active_memory_query=True, spatial_memory=True))
-    state = _run(services, spec, _request(prompt="mug"))
+    final_state = _run(services, spec, _request(prompt="mug"))
+    state = final_state["state"]
 
-    assert state.memory_pack is not None
-    assert state.memory_pack.query == "mug"
-    assert state.memory_pack.summary, "memory_pack summary should be non-empty with a match"
+    assert state["memory_pack"] is not None
+    assert state["memory_pack"]["query"] == "mug"
+    assert state["memory_pack"]["summary"], "memory_pack summary should be non-empty with a match"
 
 
 def test_memory_pack_absent_when_active_memory_query_false():
@@ -185,9 +216,10 @@ def test_memory_pack_absent_when_active_memory_query_false():
         [PlannerDecision(action_type="submit_answer", arguments={"answer": "x"})]
     )
     spec = _spec(ablation=AblationConfig(active_memory_query=False, spatial_memory=False))
-    state = _run(_services(planner), spec, _request())
+    final_state = _run(_services(planner), spec, _request())
+    state = final_state["state"]
 
-    assert state.memory_pack is None
+    assert state["memory_pack"] is None
 
 
 def test_tool_failure_from_registry_does_not_crash():
@@ -223,11 +255,12 @@ def test_tool_failure_from_registry_does_not_crash():
     )
     # Should not raise; the failed tool yields a non-terminal error result and
     # the graph continues to the next round, which submits an answer.
-    state = _run(services, _spec(), _request())
+    final_state = _run(services, _spec(), _request())
+    state = final_state["state"]
 
-    assert state.terminal is True
-    assert state.success is True
-    assert state.answer == "ok"
+    assert state["terminal"] is True
+    assert state["success"] is True
+    assert state["answer"] == "ok"
 
 
 def test_runtime_services_default_context_is_context_compiler():
