@@ -243,14 +243,14 @@ Wrap the existing `src.agent_planner.Planner` behind the runtime interface.
 Responsibilities:
 
 - Accept the compiled context string.
-- Call the configured model provider.
+- Call a configured OpenAI-compatible model provider.
 - Validate and normalize the response into `PlannerDecision`.
 - Map old `PlannerAction` fields into runtime `arguments`.
 - Reject malformed terminal decisions:
   - AEQA `submit_answer` must include `answer`.
   - GOATBench terminal submit must include enough target evidence for validation.
 
-The runtime can later support Claude, OpenAI, or other agent SDK clients here without changing graph topology.
+Provider selection and credentials must be injected from configuration, not hard-coded in runtime code. The runtime may talk to Claude, OpenAI, or any other OpenAI-compatible endpoint later without changing graph topology, but the concrete `base_url`, `model`, `api_key`, and related transport settings must stay configurable at runner/spec time.
 
 ### 7.5 RealToolRegistry
 
