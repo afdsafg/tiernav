@@ -1,8 +1,9 @@
 """Planner adapter bridging legacy PlannerAction to runtime contracts."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
+from .config import ProviderConfig
 from .contracts import PlannerDecision
 
 # Fields collected into PlannerDecision.arguments when non-None on the
@@ -42,3 +43,66 @@ def planner_action_to_decision(action: Any) -> PlannerDecision:
         confidence=confidence,
         arguments=arguments,
     )
+
+
+def _call_vlm(messages: list[dict], **kwargs: Any) -> str:
+    """Indirection so tests can monkeypatch the OpenAI-compatible transport.
+
+    Delegates to ``src.agent_workflow.call_vlm``. Kept as a module-level
+    function (not an import) so the planner module has a single seam to
+    patch at the call boundary.
+    """
+    from src.agent_workflow import call_vlm
+
+    return call_vlm(messages, **kwargs)
+
+
+class PlannerClient:
+    """Provider-agnostic planner transport.
+
+    Reads ``api_key`` / ``base_url`` / ``model`` from the injected
+    ``ProviderConfig`` lazily at call time, so environment changes are
+    picked up between calls. Explicit constructor overrides win over
+    config resolution. Calls the existing OpenAI-compatible transport
+    (``call_vlm`` in ``src.agent_workflow``) — no hard-coded vendor
+    endpoints.
+    """
+
+    def __init__(
+        self,
+        provider: ProviderConfig,
+        *,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> None:
+        self.provider = provider
+        self._api_key = api_key
+        self._base_url = base_url
+        self._model = model
+
+    def resolve_api_key(self) -> str:
+        return self._api_key if self._api_key is not None else self.provider.resolve_api_key()
+
+    def resolve_base_url(self) -> str:
+        return self._base_url if self._base_url is not None else self.provider.resolve_base_url()
+
+    def resolve_model(self) -> str:
+        return self._model if self._model is not None else self.provider.resolve_model()
+
+    def call_vlm(
+        self,
+        messages: list[dict],
+        *,
+        max_tokens: int = 4096,
+        temperature: float = 0.3,
+    ) -> str:
+        """Call the OpenAI-compatible transport with resolved settings."""
+        return _call_vlm(
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            api_key=self.resolve_api_key(),
+            base_url=self.resolve_base_url(),
+            model_name=self.resolve_model(),
+        )

@@ -16,6 +16,10 @@ OPENAI_BASE_URL = os.getenv(
 MODEL_NAME = os.getenv("MODEL_NAME", "mimo-v2.5")
 
 # Planner API (mimo-v2.5 via opencode.ai; defaults to HMGE Agent API values)
+# LEGACY DEFAULTS: resolved at import time for the legacy Planner / call_vlm
+# fallback path. The new runtime path (tiernav_runtime.PlannerClient +
+# ProviderConfig) does NOT depend on these — it resolves env vars lazily by
+# name. Do not treat these as the canonical runtime model/endpoint choice.
 QWEN_PLANNER_API_KEY = os.getenv("QWEN_PLANNER_API_KEY", OPENAI_API_KEY)
 QWEN_PLANNER_BASE_URL = os.getenv("QWEN_PLANNER_BASE_URL", OPENAI_BASE_URL)
 QWEN_PLANNER_MODEL = os.getenv("QWEN_PLANNER_MODEL", MODEL_NAME)
