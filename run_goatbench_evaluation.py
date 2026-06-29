@@ -500,6 +500,7 @@ def _run_goatbench_runtime(
         clip_model=models["clip"],
         clip_preprocess=models["clip_preprocess"],
         clip_tokenizer=models["clip_tokenizer"],
+        logger=logger,
     )
 
     # --- GOATBench rule: 1m success distance, explicit stop required ---
@@ -539,65 +540,87 @@ def _run_goatbench_runtime(
     adapter = GOATBenchTaskAdapter()
     adapter.start_episode(episode_id, scene_id=scene_id, output_dir=output_dir)
 
+    env_service.start_session(episode_id=episode_id, initial_pose={
+        "x": float(pts[0]), "y": float(pts[1]), "theta": float(angle)
+    })
+
     results = []
 
-    for subtask_idx, (goal_type, subtask_goal) in enumerate(
-        zip(all_subtask_goal_types, all_subtask_goals)
-    ):
-        goal_description = (
-            subtask_goal[0].get("object_category", str(subtask_goal))
-            if subtask_goal and isinstance(subtask_goal[0], dict)
-            else str(subtask_goal)
-        )
-
-        # --- Extract goal pose for distance measurement ---
-        goal_positions = []
-        if subtask_goal and isinstance(subtask_goal[0], dict):
-            for goal_obj in subtask_goal:
-                if "view_points" in goal_obj and goal_obj["view_points"]:
-                    goal_positions.append(
-                        goal_obj["view_points"][0]["agent_state"]["position"]
-                    )
-                elif "position" in goal_obj:
-                    goal_positions.append(goal_obj["position"])
-
-        if goal_positions:
-            gp = goal_positions[0]
-            env_service.set_goal_pose({
-                "x": float(gp[0]),
-                "y": float(gp[2]),
-            })
-
-        # --- Pose threading: each subtask starts from previous end pose ---
-        current_pose = env_service.current_pose if env_service.current_pose else {
-            "x": float(pts[0]), "y": float(pts[1]), "theta": float(angle)
-        }
-
-        request = adapter.run_subtask(
-            subtask_index=subtask_idx,
-            goal_type=goal_type,
-            goal_description=goal_description,
-            initial_pose=current_pose,
-        )
-
-        result = entrypoint.run(spec, request)
-
-        # --- Post-subtask: compute geodesic distance ---
-        subtask_viewpoints = []
-        if subtask_goal:
-            for goal_obj in subtask_goal:
-                if hasattr(goal_obj, "get") and goal_obj.get("view_points"):
-                    for vp in goal_obj["view_points"]:
-                        subtask_viewpoints.append(
-                            vp["agent_state"]["position"]
-                        )
-        if subtask_viewpoints and hasattr(executor, "_pts") and executor._pts is not None:
-            final_dist = calc_agent_subtask_distance(
-                executor._pts, subtask_viewpoints, scene.pathfinder
+    try:
+        for subtask_idx, (goal_type, subtask_goal) in enumerate(
+            zip(all_subtask_goal_types, all_subtask_goals)
+        ):
+            goal_description = (
+                subtask_goal[0].get("object_category", str(subtask_goal))
+                if subtask_goal and isinstance(subtask_goal[0], dict)
+                else str(subtask_goal)
             )
-            result.distance_to_goal = float(final_dist)
 
-        results.append(result)
+            # --- Extract goal pose for distance measurement ---
+            goal_positions = []
+            if subtask_goal and isinstance(subtask_goal[0], dict):
+                for goal_obj in subtask_goal:
+                    if "view_points" in goal_obj and goal_obj["view_points"]:
+                        goal_positions.append(
+                            goal_obj["view_points"][0]["agent_state"]["position"]
+                        )
+                    elif "position" in goal_obj:
+                        goal_positions.append(goal_obj["position"])
+
+            if goal_positions:
+                gp = goal_positions[0]
+                env_service.set_goal_pose({
+                    "x": float(gp[0]),
+                    "y": float(gp[2]),
+                })
+
+            # --- Pose threading: each subtask starts from previous end pose ---
+            current_pose = env_service.current_pose if env_service.current_pose else {
+                "x": float(pts[0]), "y": float(pts[1]), "theta": float(angle)
+            }
+
+            request = adapter.run_subtask(
+                subtask_index=subtask_idx,
+                goal_type=goal_type,
+                goal_description=goal_description,
+                initial_pose=current_pose,
+            )
+
+            try:
+                result = entrypoint.run(spec, request)
+            except Exception as e:
+                logging.exception("Subtask %d failed: %s", subtask_idx, e)
+                from src.tiernav_runtime.contracts import EpisodeResult, TaskMode
+                result = EpisodeResult(
+                    episode_id=episode_id,
+                    scene_id=scene_id,
+                    task_name="goatbench",
+                    task_mode=TaskMode.GOAL_NAVIGATION,
+                    success=False,
+                    failure_type="runtime_error",
+                    error=str(e),
+                )
+
+            # --- Post-subtask: compute geodesic distance ---
+            subtask_viewpoints = []
+            if subtask_goal:
+                for goal_obj in subtask_goal:
+                    if hasattr(goal_obj, "get") and goal_obj.get("view_points"):
+                        for vp in goal_obj["view_points"]:
+                            subtask_viewpoints.append(
+                                vp["agent_state"]["position"]
+                            )
+            if subtask_viewpoints and hasattr(executor, "_pts") and executor._pts is not None:
+                final_dist = calc_agent_subtask_distance(
+                    executor._pts, subtask_viewpoints, scene.pathfinder
+                )
+                result.distance_to_goal = float(final_dist)
+
+            results.append(result)
+            global_step += 1
+
+    finally:
+        env_service.teardown_session()
 
     return global_step
 
