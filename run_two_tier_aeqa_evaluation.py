@@ -37,14 +37,107 @@ from ultralytics import SAM, YOLOWorld
 
 from src.agent_workflow import run_episode_two_tier
 from src.two_tier_graph.entrypoint import run_episode_two_tier_langgraph
+from src.tiernav_runtime.contracts import PlannerDecision
 from src.const import INVALID_SCENE_ID
 
 # Engine selector — "legacy" uses the hand-rolled Two-Tier loop; "langgraph"
 # uses the LangGraph state-machine port (behavior-preserving, see
 # /home/afdsafg/.codebuddy/plans/swift-forging-newton.md).
+# "runtime" uses the TierNav runtime with adapters and RuntimeEntrypoint
+# (Task 8). Task 9 wires habitat-backed tools for full execution.
+
+
+def _run_aeqa_runtime(
+    scene_id,
+    question,
+    question_id,
+    cfg,
+    detection_model,
+    sam_predictor,
+    clip_model,
+    clip_preprocess,
+    clip_tokenizer,
+    output_dir,
+    max_planner_rounds,
+    max_total_steps,
+    start_pts,
+    start_angle,
+    run_logger,
+    method_config,
+    scene_class=None,
+    goal_type=None,
+    goal_metadata=None,
+    scene=None,
+    tsdf_planner=None,
+):
+    """Runtime engine: adapter -> RuntimeEntrypoint -> legacy dict.
+
+    Structural integration path introduced in Task 8.  Uses the AEQA task
+    adapter and RuntimeEntrypoint.with_fake_services (stable defaults) to
+    produce a correctly-shaped result dict.  Task 9 replaces the fake
+    services with habitat-backed tools and a real VLM planner.
+    """
+    from src.tiernav_runtime.adapters import AEQATaskAdapter
+    from src.tiernav_runtime.contracts import RunSpec
+    from src.tiernav_runtime.entrypoint import (
+        RuntimeEntrypoint,
+        episode_result_to_legacy_dict,
+    )
+
+    adapter = AEQATaskAdapter()
+
+    pts_array = getattr(start_pts, "tolist", None)
+    if pts_array is not None:
+        pts_list = pts_array()
+    else:
+        pts_list = list(start_pts) if start_pts is not None else [0.0, 0.0]
+    initial_pose = {
+        "x": float(pts_list[0]),
+        "y": float(pts_list[1]),
+        "theta": float(start_angle),
+    }
+
+    request = adapter.to_request(
+        scene_id=scene_id,
+        question_id=question_id,
+        question=question,
+        output_dir=output_dir,
+        initial_pose=initial_pose,
+    )
+
+    spec = RunSpec(
+        run_id=question_id,
+        task_name="aeqa",
+        dataset_split="aeqa",
+        output_dir=output_dir,
+        planner_provider="local",
+        planner_model=os.environ.get("MODEL_NAME", "qwen2.5vl-3b-local"),
+        max_rounds=max_planner_rounds,
+        max_steps=max_total_steps,
+    )
+
+    # Fake planner: submits an empty answer.  The result dict has the
+    # correct shape but not a real VLM-generated answer.  Task 9 will
+    # replace this with a PlannerClient backed by the real VLM.
+    _fake_planner = type(
+        "FakePlanner",
+        (),
+        {
+            "decide": lambda self, prompt: PlannerDecision(
+                action_type="submit_answer", arguments={"answer": ""}
+            )
+        },
+    )()
+
+    entrypoint = RuntimeEntrypoint.with_fake_services(_fake_planner)
+    result = entrypoint.run(spec, request)
+    return episode_result_to_legacy_dict(result, question=question)
+
+
 _ENGINES = {
     "legacy": run_episode_two_tier,
     "langgraph": run_episode_two_tier_langgraph,
+    "runtime": _run_aeqa_runtime,
 }
 from src.logger_aeqa import Logger
 from src.utils import get_pts_angle_aeqa
@@ -614,12 +707,13 @@ def parse_args():
     )
     parser.add_argument(
         "--engine",
-        default="legacy",
+        default="runtime",
         type=str,
         choices=list(_ENGINES.keys()),
-        help="Agent runtime engine. 'legacy' = hand-rolled Two-Tier loop "
+        help="Agent runtime engine. 'runtime' = TierNav runtime with adapters "
+             "(Task 8, default). 'legacy' = hand-rolled Two-Tier loop "
              "(agent_workflow.py:1087); 'langgraph' = LangGraph state-machine "
-             "port (two_tier_graph/). Default: legacy.",
+             "port (two_tier_graph/).",
     )
     return parser.parse_args()
 

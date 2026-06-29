@@ -31,6 +31,7 @@ from src.query_vlm_goatbench import query_vlm_for_response
 from src.logger_goatbench import Logger
 
 from src.goatbench_graph.entrypoint import run_goatbench_subtask_langgraph
+from src.tiernav_runtime.contracts import PlannerDecision
 
 # Known corrupted scenes on server — loading these crashes habitat-sim.
 # Populated by try/except during runs. Persisted to corrupted_scenes.json.
@@ -433,9 +434,99 @@ def _load_corrupted_scenes(output_dir: str) -> set:
     return set()
 
 
+def _run_goatbench_runtime(
+    scene,
+    tsdf_planner,
+    cfg,
+    cam_intr,
+    logger,
+    models,
+    eps_frontier_dir,
+    eps_snapshot_dir,
+    episode_dir,
+    scene_id,
+    episode_id,
+    all_subtask_goal_types,
+    all_subtask_goals,
+    pts,
+    angle,
+    global_step,
+    num_step,
+    cfg_cg,
+    tsdf_bnds,
+    floor_height,
+):
+    """Runtime engine: GOATBenchAdapter session threading -> RuntimeEntrypoint.
+
+    Uses the GOATBench adapter's ``start_episode`` / ``run_subtask`` session
+    API so all subtasks share the same episode-level ``episode_id`` (no
+    per-subtask composite).  Downstream memory services see the same session
+    across subtasks, fulfilling the GOATBench SUBTASK_SEQUENCE requirement.
+
+    Task 9 wires habitat-backed tools for full execution; for now the
+    entrypoint uses stable default tools and a fake planner.
+    """
+    from src.tiernav_runtime.adapters import GOATBenchTaskAdapter
+    from src.tiernav_runtime.contracts import (
+        RunSpec,
+        BenchmarkRule,
+        MemoryScope,
+    )
+    from src.tiernav_runtime.entrypoint import RuntimeEntrypoint, episode_result_to_legacy_dict
+    from src.tiernav_runtime.memory import MemorySession
+    from src.tiernav_runtime.success import SuccessEvaluator
+
+    output_dir = str(cfg.output_dir)
+
+    adapter = GOATBenchTaskAdapter()
+    adapter.start_episode(episode_id, scene_id=scene_id, output_dir=output_dir)
+
+    _fake_planner = type(
+        "FakePlanner",
+        (),
+        {
+            "decide": lambda self, prompt: PlannerDecision(
+                action_type="submit_answer", arguments={}
+            )
+        },
+    )()
+
+    spec = RunSpec(
+        run_id=f"{scene_id}_{episode_id}",
+        task_name="goatbench",
+        dataset_split="goatbench",
+        output_dir=output_dir,
+        planner_provider="local",
+        planner_model="qwen2.5vl-3b",
+        max_rounds=cfg.get("max_planner_rounds", 20),
+        max_steps=num_step,
+    )
+
+    entrypoint = RuntimeEntrypoint.with_fake_services(_fake_planner)
+
+    for subtask_idx, (goal_type, subtask_goal) in enumerate(
+        zip(all_subtask_goal_types, all_subtask_goals)
+    ):
+        goal_description = (
+            subtask_goal.get("description", str(subtask_goal))
+            if isinstance(subtask_goal, dict)
+            else str(subtask_goal)
+        )
+        request = adapter.run_subtask(
+            subtask_index=subtask_idx,
+            goal_type=goal_type,
+            goal_description=goal_description,
+            initial_pose={"x": float(pts[0]), "y": float(pts[1]), "theta": float(angle)},
+        )
+        _ = entrypoint.run(spec, request)
+
+    return global_step
+
+
 _ENGINES = {
     "legacy": run_goatbench_subtask_legacy,
     "langgraph": run_goatbench_subtask_langgraph,
+    "runtime": _run_goatbench_runtime,
 }
 
 
@@ -647,8 +738,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--engine",
         help="execution engine",
-        default="legacy",
-        choices=["legacy", "langgraph"],
+        default="runtime",
+        choices=["legacy", "langgraph", "runtime"],
         type=str,
     )
     args = parser.parse_args()
