@@ -192,6 +192,20 @@ def execute_tool_node(
     )
     result: ToolResult = services.tools.dispatch(call)
 
+    # Sync executor pose back to the environment service so distance-to-goal
+    # stays fresh across steps (critical for GOATBench 1m success check).
+    env = services.environment
+    executor = getattr(env, "executor", None) if env is not None else None
+    if executor is not None and hasattr(executor, "_pts") and executor._pts is not None:
+        pts = executor._pts
+        angle = getattr(executor, "_angle", 0.0) or 0.0
+        env._current_pose = {
+            "x": float(pts[0]),
+            "y": float(pts[1]),
+            "theta": float(angle),
+        }
+        env._path_length = float(getattr(executor, "_path_length", 0.0) or 0.0)
+
     episode.last_observation = result.observation
     services.memory.update_from_observation(
         result.observation,
