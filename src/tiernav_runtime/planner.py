@@ -106,3 +106,58 @@ class PlannerClient:
             base_url=self.resolve_base_url(),
             model_name=self.resolve_model(),
         )
+
+    def decide(self, prompt: str) -> PlannerDecision:
+        """Call the VLM with the compiled prompt and return a PlannerDecision.
+
+        Builds a single user message from ``prompt``, calls the
+        OpenAI-compatible transport, parses the JSON response, and maps it
+        through ``planner_action_to_decision`` for legacy PlannerAction
+        compatibility.
+
+        On JSON parse errors or missing ``action_type``, returns a terminal
+        ``submit_answer`` with confidence 0.0 to avoid infinite loops on
+        unparseable planner output.
+        """
+        import json as _json
+
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            raw = self.call_vlm(messages)
+        except Exception:
+            return PlannerDecision(
+                action_type="submit_answer",
+                reasoning="planner_call_failed",
+                confidence=0.0,
+                arguments={"failure_reason": "planner_call_failed"},
+            )
+
+        try:
+            parsed = _json.loads(raw.strip())
+        except _json.JSONDecodeError:
+            return PlannerDecision(
+                action_type="submit_answer",
+                reasoning="planner_parse_error",
+                confidence=0.0,
+                arguments={"failure_reason": "planner_parse_error", "raw": raw[:500]},
+            )
+
+        if not isinstance(parsed, dict):
+            return PlannerDecision(
+                action_type="submit_answer",
+                reasoning="planner_response_not_dict",
+                confidence=0.0,
+                arguments={"failure_reason": "planner_response_not_dict"},
+            )
+
+        if not parsed.get("action_type"):
+            return PlannerDecision(
+                action_type="submit_answer",
+                reasoning="planner_missing_action_type",
+                confidence=0.0,
+                arguments={"failure_reason": "planner_missing_action_type"},
+            )
+
+        return planner_action_to_decision(
+            type("PlannerAction", (), parsed)()
+        )
