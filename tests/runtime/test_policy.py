@@ -121,3 +121,16 @@ def test_policy_decision_metadata_defaults_to_empty():
 def test_hint_defaults_to_empty():
     d = PolicyDecision(route="x", reason="y")
     assert d.hint == ""
+
+
+# --- Consistency with the success evaluator --------------------------------
+
+
+def test_submit_answer_routes_to_finalize_so_evaluator_sees_explicit_submit():
+    """Policy routes submit_answer to finalize; the success evaluator treats
+    reaching finalize via submit_answer as an explicit submit. This pins the
+    hand-off contract between Task 6 (evaluator) and Task 7 (graph wiring).
+    """
+    decision = WorkflowPolicy().decide(_spec(), _state(action_type="submit_answer"))
+    assert decision.route == "finalize"
+    assert decision.reason == "submit_answer"

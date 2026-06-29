@@ -244,6 +244,13 @@ class EpisodeResult(RuntimeModel):
     error: str = ""
     event_log_path: str = ""
     artifacts: dict[str, str] = Field(default_factory=dict)
+    # GOATBench scoring inputs. `distance_to_goal` is the final
+    # agent-to-goal distance (None when not measured, e.g. AEQA episodes).
+    # `submit_was_explicit` records whether the terminal state came from an
+    # explicit planner submit vs a budget fallback, so the success evaluator
+    # can enforce GOATBench's explicit-stop requirement.
+    distance_to_goal: Optional[NonNegativeFloat] = None
+    submit_was_explicit: bool = False
 
 
 PublicModel = Literal[
