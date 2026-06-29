@@ -187,7 +187,7 @@ def _evidence_to_observation(evidence: Any) -> Observation:
     pose out-of-band and threads it through ``EpisodeState``. Task 7 will
     populate it here once the pose channel is wired through dispatch.
     """
-    summary = getattr(evidence, "outcome", "") or getattr(evidence, "subgoal", "")
+    summary = getattr(evidence, "progress", "") or getattr(evidence, "outcome", "")
     room_id = getattr(evidence, "room_id", -1)
     return Observation(
         summary=str(summary),
@@ -199,6 +199,8 @@ def _evidence_to_observation(evidence: Any) -> Observation:
             "outcome": str(getattr(evidence, "outcome", "") or ""),
             "gd_quality": str(getattr(evidence, "gd_quality", "") or ""),
             "subgoal": str(getattr(evidence, "subgoal", "") or ""),
+            "progress": str(getattr(evidence, "progress", "") or ""),
+            "salient": list(getattr(evidence, "salient", []) or []),
         },
     )
 

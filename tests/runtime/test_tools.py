@@ -322,6 +322,8 @@ def test_real_registry_explore_panorama_dispatches_and_builds_result():
     assert result.metrics["path_length"] == pytest.approx(2.5)
     obs = result.observation
     assert obs.summary  # non-empty
+    # Legacy priority: progress or outcome.
+    assert obs.summary == "reached"
     assert obs.image_ids == ["frame_000", "frame_007"]
     assert obs.object_ids == ["chair", "table"]
     assert obs.room_id == "3"
@@ -329,6 +331,8 @@ def test_real_registry_explore_panorama_dispatches_and_builds_result():
     assert obs.raw["outcome"] == "object_found"
     assert obs.raw["gd_quality"] == "ok"
     assert obs.raw["subgoal"] == "fake-subgoal"
+    assert obs.raw["progress"] == "reached"
+    assert obs.raw["salient"] == ["red chair"]
 
 
 def test_real_registry_navigate_to_object_passes_args():
@@ -414,3 +418,46 @@ def test_real_registry_room_id_none_when_unset():
     result = reg.dispatch(call)
     assert result.ok is True
     assert result.observation.room_id is None
+
+
+def test_evidence_to_observation_preserves_progress_and_salient_in_raw():
+    """raw must carry progress/salient so legacy consumers stay aligned."""
+    from src.tiernav_runtime.tools import _evidence_to_observation
+
+    ev = TrajectoryEvidence(
+        subgoal="sg",
+        task_mode="navigate_to_object",
+        progress="moved to chair",
+        salient=["red chair", "window"],
+        outcome="object_found",
+        gd_quality="ok",
+        key_frames=["k1"],
+        room_id=2,
+        objects_nearby=["o1"],
+    )
+    obs = _evidence_to_observation(ev)
+    assert obs.raw["progress"] == "moved to chair"
+    assert obs.raw["salient"] == ["red chair", "window"]
+    # summary prefers progress over outcome (legacy priority).
+    assert obs.summary == "moved to chair"
+
+
+def test_evidence_to_observation_summary_falls_back_to_outcome_when_progress_empty():
+    """When progress is empty, summary falls back to outcome."""
+    from src.tiernav_runtime.tools import _evidence_to_observation
+
+    ev = TrajectoryEvidence(
+        subgoal="sg",
+        task_mode="navigate_to_object",
+        progress="",
+        salient=[],
+        outcome="object_found",
+        gd_quality="ok",
+        key_frames=["k1"],
+        room_id=2,
+        objects_nearby=["o1"],
+    )
+    obs = _evidence_to_observation(ev)
+    assert obs.summary == "object_found"
+    assert obs.raw["progress"] == ""
+    assert obs.raw["salient"] == []
