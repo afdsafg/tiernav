@@ -208,3 +208,30 @@ def test_second_run_same_episode_id_raises_FileExistsError(tmp_path):
     state = replay_events(first.event_log_path)
     assert state.terminal is True
     assert state.answer == "chair"
+
+
+# ── with_environment_services (Task 3) ───────────────────────────────────
+
+
+class _FakeEnv:
+    """Minimal environment double — RuntimeServices just holds the reference."""
+
+    task_mode = "question_answering"
+
+
+def test_with_environment_services_attaches_env_to_services():
+    """RuntimeEntrypoint.with_environment_services wires env onto RuntimeServices.
+
+    The graph is not yet rewired to call the env (Task 7), but the service
+    bundle must carry the environment reference so production runners can
+    build it and Task 7 can read it.
+    """
+    from src.tiernav_runtime.entrypoint import RuntimeEntrypoint
+
+    planner = FakePlanner(
+        [PlannerDecision(action_type="submit_answer", arguments={"answer": "chair"})]
+    )
+    env = _FakeEnv()
+    entrypoint = RuntimeEntrypoint.with_environment_services(planner, env)
+
+    assert entrypoint.services.environment is env

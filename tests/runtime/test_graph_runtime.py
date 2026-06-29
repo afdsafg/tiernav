@@ -300,3 +300,113 @@ def test_graph_state_typeddict_has_required_keys():
     ann = RuntimeGraphState.__annotations__
     for key in ("spec", "request", "state", "policy", "prompt"):
         assert key in ann, f"RuntimeGraphState missing key: {key}"
+
+
+# ── RuntimeEnvironmentService (Task 3) ───────────────────────────────────
+
+
+from src.tiernav_runtime.env import RuntimeEnvironmentService
+
+
+class FakeScene:
+    """Minimal scene double with a cleanup flag."""
+
+    def __init__(self) -> None:
+        self.cleanup_called = False
+
+    def cleanup(self) -> None:
+        self.cleanup_called = True
+
+
+class FakeExecutor:
+    """Executor double tracking path_length and set_state calls."""
+
+    def __init__(self, path_length: float = 0.0) -> None:
+        self._path_length = path_length
+        self.set_state_calls: list[tuple] = []
+
+    @property
+    def path_length(self) -> float:
+        return self._path_length
+
+    def set_state(self, pts, angle, step_counter: int) -> None:
+        self.set_state_calls.append((pts, angle, step_counter))
+
+
+def _aeqa_env(executor: FakeExecutor | None = None) -> RuntimeEnvironmentService:
+    return RuntimeEnvironmentService.for_aeqa(
+        scene=FakeScene(),
+        tsdf_planner=object(),
+        executor=executor or FakeExecutor(),
+        detection_model=None,
+        sam_predictor=None,
+        clip_model=None,
+        clip_preprocess=None,
+        clip_tokenizer=None,
+        logger=None,
+    )
+
+
+def _goat_env(executor: FakeExecutor | None = None) -> RuntimeEnvironmentService:
+    return RuntimeEnvironmentService.for_goatbench(
+        scene=FakeScene(),
+        tsdf_planner=object(),
+        executor=executor or FakeExecutor(),
+        detection_model=None,
+        sam_predictor=None,
+        clip_model=None,
+        clip_preprocess=None,
+        clip_tokenizer=None,
+        logger=None,
+    )
+
+
+def test_environment_service_can_build_aeqa_session():
+    env = _aeqa_env()
+    assert env.task_mode == "question_answering"
+
+
+def test_environment_service_can_build_goatbench_session():
+    env = _goat_env()
+    assert env.task_mode == "goal_navigation"
+
+
+def test_aeqa_start_session_resets_pose_and_path_length():
+    env = _aeqa_env()
+    # Prime state with a non-default pose and path length.
+    env.start_session("q-1", initial_pose={"x": 1.0, "y": 2.0, "theta": 0.5})
+    assert env.current_pose == {"x": 1.0, "y": 2.0, "theta": 0.5}
+
+    # Second question: fresh session must reset pose/path_length.
+    env.start_session("q-2", initial_pose={"x": 9.0, "y": 8.0, "theta": 0.0})
+    assert env.current_pose == {"x": 9.0, "y": 8.0, "theta": 0.0}
+    assert env.path_length == 0.0
+
+
+def test_goatbench_start_session_threads_pose_across_subtasks():
+    env = _goat_env()
+    env.start_session("ep-1", initial_pose={"x": 0.0, "y": 0.0, "theta": 0.0})
+    # Simulate movement during subtask 1.
+    env.advance_pose({"x": 3.0, "y": 4.0, "theta": 1.0}, path_length=5.0)
+
+    # Subtask 2 within same episode: pose must thread, NOT reset.
+    env.start_session("ep-1", subtask_index=1, initial_pose={"x": 0.0, "y": 0.0, "theta": 0.0})
+    assert env.current_pose == {"x": 3.0, "y": 4.0, "theta": 1.0}
+    assert env.path_length == 5.0
+
+
+def test_teardown_session_calls_scene_cleanup_and_marks_torn_down():
+    env = _aeqa_env()
+    env.start_session("q-1")
+    env.teardown_session()
+    assert env.scene.cleanup_called is True
+    assert env.is_torn_down is True
+
+
+def test_teardown_session_idempotent():
+    env = _aeqa_env()
+    env.start_session("q-1")
+    env.teardown_session()
+    # Second teardown must not re-call cleanup.
+    env.teardown_session()
+    assert env.scene.cleanup_called is True

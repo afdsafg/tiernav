@@ -40,13 +40,38 @@ class RuntimeEntrypoint:
         """Build an entrypoint backed by stable default fake services.
 
         No external services are contacted: tools are the noop/submit defaults,
-        memory is in-memory, and the policy is the pure WorkflowPolicy.
+        memory is in-memory, and the policy is the default WorkflowPolicy.
         """
         services = RuntimeServices(
             planner=planner,
             tools=ToolRegistry.with_stable_defaults(),
             memory=MemoryService(),
             policy=WorkflowPolicy(),
+        )
+        return cls(services)
+
+    @classmethod
+    def with_environment_services(
+        cls,
+        planner: Any,
+        environment: Any,
+        memory: MemoryService | None = None,
+        policy: WorkflowPolicy | None = None,
+    ) -> "RuntimeEntrypoint":
+        """Build an entrypoint backed by a RuntimeEnvironmentService.
+
+        The environment service owns the Habitat scene, TSDFPlanner, models,
+        and pose/path_length state. Tools remain the stable defaults for now;
+        Task 4 wires Habitat-backed tools and Task 7 rewires the graph to call
+        the environment service. This factory only makes the service available
+        on :class:`RuntimeServices` so production runners can construct it.
+        """
+        services = RuntimeServices(
+            planner=planner,
+            tools=ToolRegistry.with_stable_defaults(),
+            memory=memory if memory is not None else MemoryService(),
+            policy=policy if policy is not None else WorkflowPolicy(),
+            environment=environment,
         )
         return cls(services)
 

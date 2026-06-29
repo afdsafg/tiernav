@@ -72,6 +72,7 @@ class RuntimeServices:
     memory: MemoryService
     policy: WorkflowPolicy
     context: ContextCompiler | None = None
+    environment: object | None = None
 
     def __post_init__(self) -> None:
         if self.context is None:
