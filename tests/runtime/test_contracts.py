@@ -7,11 +7,14 @@ from pydantic import ValidationError
 
 from src.tiernav_runtime.contracts import (
     AblationConfig,
+    BenchmarkRule,
     ContextSection,
     EpisodeRequest,
     EpisodeResult,
     EpisodeState,
+    GoalSpec,
     MemoryPack,
+    MemoryScope,
     Observation,
     PlannerDecision,
     PUBLIC_MODELS,
@@ -710,6 +713,8 @@ def test_json_schema_dump_contains_all_public_models():
         "Observation",
         "MemoryPack",
         "ContextSection",
+        "GoalSpec",
+        "BenchmarkRule",
     }
     assert schemas["RunSpec"]["type"] == "object"
     assert schemas["RunSpec"]["properties"]["max_rounds"]["minimum"] == 0
@@ -724,3 +729,70 @@ def test_json_schema_dump_contains_all_public_models():
 
 def test_public_model_literal_matches_public_models_registry():
     assert set(get_args(PublicModel)) == set(PUBLIC_MODELS)
+
+
+def test_goal_spec_separates_planner_and_scoring_fields():
+    goal = GoalSpec(
+        goal_type="object",
+        goal_description="chair",
+        goal_object_ids_for_scoring=["obj-1"],
+        subtask_index=2,
+        subtask_total=5,
+    )
+    assert goal.goal_description == "chair"
+    assert goal.goal_object_ids_for_scoring == ["obj-1"]
+
+
+def test_goal_spec_defaults_optional_scoring_fields():
+    goal = GoalSpec(goal_type="object", goal_description="chair")
+
+    assert goal.goal_object_ids_for_scoring == []
+    assert goal.subtask_index == 0
+    assert goal.subtask_total == 0
+
+
+def test_goal_spec_rejects_unknown_fields():
+    try:
+        GoalSpec(goal_type="object", goal_description="chair", unexpected=True)
+    except ValidationError as exc:
+        assert "unexpected" in str(exc)
+    else:
+        raise AssertionError("GoalSpec accepted an unexpected field")
+
+
+def test_benchmark_rule_exposes_memory_scope_and_success_distance():
+    rule = BenchmarkRule(
+        success_distance_m=1.0,
+        requires_explicit_stop=True,
+        memory_scope=MemoryScope.SUBTASK_SEQUENCE,
+        scoring_mode="distance",
+    )
+    assert rule.success_distance_m == 1.0
+
+
+def test_benchmark_rule_defaults_require_explicit_stop_false():
+    rule = BenchmarkRule(
+        success_distance_m=1.0,
+        memory_scope=MemoryScope.SUBTASK_SEQUENCE,
+        scoring_mode="distance",
+    )
+    assert rule.requires_explicit_stop is False
+
+
+def test_benchmark_rule_rejects_unknown_memory_scope():
+    try:
+        BenchmarkRule(
+            success_distance_m=1.0,
+            memory_scope="galactic",
+            scoring_mode="distance",
+        )
+    except ValidationError as exc:
+        assert "memory_scope" in str(exc)
+    else:
+        raise AssertionError("BenchmarkRule accepted an unknown memory_scope")
+
+
+def test_memory_scope_has_per_question_and_subtask_sequence_values():
+    values = {member.value for member in MemoryScope}
+    assert "per_question" in values
+    assert "subtask_sequence" in values

@@ -38,6 +38,13 @@ class TaskMode(str, Enum):
     GOAL_NAVIGATION = "goal_navigation"
 
 
+class RuntimeMode(str, Enum):
+    """Selects which execution path the runtime entrypoint drives."""
+
+    GRAPH = "graph"
+    LEGACY = "legacy"
+
+
 class AblationConfig(RuntimeModel):
     """Ablation switches for the three main contributions and support levers."""
 
@@ -48,6 +55,43 @@ class AblationConfig(RuntimeModel):
     stall_recovery: bool = False
 
 
+class MemoryScope(str, Enum):
+    """How far memory reaches across an episode.
+
+    ``PER_QUESTION`` scopes memory to a single question/answer (AEQA: each
+    question is scored independently). ``SUBTASK_SEQUENCE`` shares memory
+    across the ordered subtasks of one episode (GOATBench: later subtasks may
+    reuse observations from earlier ones).
+    """
+
+    PER_QUESTION = "per_question"
+    SUBTASK_SEQUENCE = "subtask_sequence"
+
+
+class GoalSpec(RuntimeModel):
+    """Goal description for a navigation/scoring episode.
+
+    ``goal_object_ids_for_scoring`` is the authoritative list of target object
+    ids used by the scorer, kept separate from ``goal_description`` which is
+    what the planner sees in its prompt.
+    """
+
+    goal_type: str
+    goal_description: str
+    goal_object_ids_for_scoring: list[str] = Field(default_factory=list)
+    subtask_index: NonNegativeInt = 0
+    subtask_total: NonNegativeInt = 0
+
+
+class BenchmarkRule(RuntimeModel):
+    """Per-benchmark success and memory policy."""
+
+    success_distance_m: NonNegativeFloat
+    requires_explicit_stop: bool = False
+    memory_scope: MemoryScope
+    scoring_mode: str
+
+
 class RunSpec(RuntimeModel):
     """Configuration for a reproducible run or sweep member."""
 
@@ -56,8 +100,11 @@ class RunSpec(RuntimeModel):
     task_name: str
     dataset_split: str
     output_dir: str
+    runtime_mode: RuntimeMode = RuntimeMode.GRAPH
     planner_provider: str
     planner_model: str
+    planner_base_url: str = ""
+    planner_api_key_env: str = ""
     seed: NonNegativeInt = 0
     max_rounds: NonNegativeInt = 10
     max_steps: NonNegativeInt = 50
@@ -210,6 +257,8 @@ PublicModel = Literal[
     "Observation",
     "MemoryPack",
     "ContextSection",
+    "GoalSpec",
+    "BenchmarkRule",
 ]
 
 PUBLIC_MODELS: dict[str, type[BaseModel]] = {
@@ -223,6 +272,8 @@ PUBLIC_MODELS: dict[str, type[BaseModel]] = {
     "Observation": Observation,
     "MemoryPack": MemoryPack,
     "ContextSection": ContextSection,
+    "GoalSpec": GoalSpec,
+    "BenchmarkRule": BenchmarkRule,
 }
 
 
