@@ -1,5 +1,11 @@
 import os
 
+# ARCHIVED (Task 9): This runner uses the legacy Two-Tier LangGraph path
+# (run_episode_two_tier_langgraph) directly.  Task 9 cut the main
+# GOATBench runner (run_goatbench_evaluation.py) over to runtime-only
+# (_run_goatbench_runtime).  Keep this file for reference but do not
+# extend it.  Use run_goatbench_evaluation.py for new work.
+
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["HABITAT_SIM_LOG"] = "quiet"

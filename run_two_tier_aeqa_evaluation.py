@@ -35,16 +35,13 @@ import torch
 from omegaconf import OmegaConf
 from ultralytics import SAM, YOLOWorld
 
-from src.agent_workflow import run_episode_two_tier
-from src.two_tier_graph.entrypoint import run_episode_two_tier_langgraph
+from src.tiernav_runtime.config import ProviderConfig
 from src.tiernav_runtime.contracts import PlannerDecision
 from src.const import INVALID_SCENE_ID
 
-# Engine selector — "legacy" uses the hand-rolled Two-Tier loop; "langgraph"
-# uses the LangGraph state-machine port (behavior-preserving, see
-# /home/afdsafg/.codebuddy/plans/swift-forging-newton.md).
-# "runtime" uses the TierNav runtime with adapters and RuntimeEntrypoint
-# (Task 8). Task 9 wires habitat-backed tools for full execution.
+# Runtime engine — only path after Task 9.  _run_aeqa_runtime uses the
+# TierNav runtime with adapters and RuntimeEntrypoint (Task 8).  Legacy and
+# LangGraph paths were removed in Task 9 (commit 4951b10+1).
 
 
 def _run_aeqa_runtime(
@@ -86,6 +83,12 @@ def _run_aeqa_runtime(
 
     adapter = AEQATaskAdapter()
 
+    provider_config = ProviderConfig(
+        api_key_env="QWEN_PLANNER_API_KEY",
+        base_url_env="QWEN_PLANNER_BASE_URL",
+        model_env="QWEN_PLANNER_MODEL",
+    )
+
     pts_array = getattr(start_pts, "tolist", None)
     if pts_array is not None:
         pts_list = pts_array()
@@ -110,8 +113,8 @@ def _run_aeqa_runtime(
         task_name="aeqa",
         dataset_split="aeqa",
         output_dir=output_dir,
-        planner_provider="local",
-        planner_model=os.environ.get("MODEL_NAME", "qwen2.5vl-3b-local"),
+        planner_provider=provider_config.resolve_base_url(),
+        planner_model=provider_config.resolve_model(),
         max_rounds=max_planner_rounds,
         max_steps=max_total_steps,
     )
@@ -134,11 +137,6 @@ def _run_aeqa_runtime(
     return episode_result_to_legacy_dict(result, question=question)
 
 
-_ENGINES = {
-    "legacy": run_episode_two_tier,
-    "langgraph": run_episode_two_tier_langgraph,
-    "runtime": _run_aeqa_runtime,
-}
 from src.logger_aeqa import Logger
 from src.utils import get_pts_angle_aeqa
 
@@ -342,7 +340,6 @@ def main(
     method_name: str = "ours_full",
     method_config: Optional[dict] = None,
     run_logger: Optional["RunLogger"] = None,
-    engine: str = "legacy",
 ):
     split_name = f"{start_ratio:.2f}_{end_ratio:.2f}"
     _setup_logging(cfg.output_dir, start_ratio, end_ratio)
@@ -411,9 +408,7 @@ def main(
         )
 
         try:
-            run_episode_fn = _ENGINES.get(engine, run_episode_two_tier)
-            logging.info("Using engine: %s", engine)
-            result = run_episode_fn(
+            result = _run_aeqa_runtime(
                 scene_id=scene_id,
                 question=question,
                 question_id=question_id,
@@ -569,7 +564,6 @@ def _worker_entry(
     questions_path: Optional[str],
     method_name: str = "ours_full",
     method_config: Optional[dict] = None,
-    engine: str = "legacy",
 ) -> None:
     cfg = _load_cfg(cfg_file, exp_suffix=exp_suffix, questions_path=questions_path)
     # Build a RunLogger per worker (writes to the run's output_dir)
@@ -600,7 +594,6 @@ def _worker_entry(
             method_name=method_name,
             method_config=method_config,
             run_logger=rl,
-            engine=engine,
         )
     finally:
         rl.close()
@@ -624,7 +617,6 @@ def _run_parallel_splits(args) -> int:
                 args.questions_path,
                 args.method,
                 method_config,
-                args.engine,
             ),
         )
         process.start()
@@ -705,16 +697,6 @@ def parse_args():
              "D4_rejected_tracking, ours_full, A1_wo_notebook, A3_wo_room_seg, "
              "A4_wo_graph, A5_wo_active_query, A6_wo_rejected.",
     )
-    parser.add_argument(
-        "--engine",
-        default="runtime",
-        type=str,
-        choices=list(_ENGINES.keys()),
-        help="Agent runtime engine. 'runtime' = TierNav runtime with adapters "
-             "(Task 8, default). 'legacy' = hand-rolled Two-Tier loop "
-             "(agent_workflow.py:1087); 'langgraph' = LangGraph state-machine "
-             "port (two_tier_graph/).",
-    )
     return parser.parse_args()
 
 
@@ -757,7 +739,6 @@ if __name__ == "__main__":
                 method_name=args.method,
                 method_config=method_config,
                 run_logger=rl,
-                engine=args.engine,
             )
         finally:
             rl.close()

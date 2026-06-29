@@ -30,7 +30,7 @@ from src.goatbench_utils import prepare_goatbench_navigation_goals
 from src.query_vlm_goatbench import query_vlm_for_response
 from src.logger_goatbench import Logger
 
-from src.goatbench_graph.entrypoint import run_goatbench_subtask_langgraph
+from src.tiernav_runtime.config import ProviderConfig
 from src.tiernav_runtime.contracts import PlannerDecision
 
 # Known corrupted scenes on server — loading these crashes habitat-sim.
@@ -478,6 +478,12 @@ def _run_goatbench_runtime(
 
     output_dir = str(cfg.output_dir)
 
+    provider_config = ProviderConfig(
+        api_key_env="QWEN_PLANNER_API_KEY",
+        base_url_env="QWEN_PLANNER_BASE_URL",
+        model_env="QWEN_PLANNER_MODEL",
+    )
+
     adapter = GOATBenchTaskAdapter()
     adapter.start_episode(episode_id, scene_id=scene_id, output_dir=output_dir)
 
@@ -496,8 +502,8 @@ def _run_goatbench_runtime(
         task_name="goatbench",
         dataset_split="goatbench",
         output_dir=output_dir,
-        planner_provider="local",
-        planner_model="qwen2.5vl-3b",
+        planner_provider=provider_config.resolve_base_url(),
+        planner_model=provider_config.resolve_model(),
         max_rounds=cfg.get("max_planner_rounds", 20),
         max_steps=num_step,
     )
@@ -523,14 +529,7 @@ def _run_goatbench_runtime(
     return global_step
 
 
-_ENGINES = {
-    "legacy": run_goatbench_subtask_legacy,
-    "langgraph": run_goatbench_subtask_langgraph,
-    "runtime": _run_goatbench_runtime,
-}
-
-
-def main(cfg, start_ratio=0.0, end_ratio=1.0, split=1, engine="legacy"):
+def main(cfg, start_ratio=0.0, end_ratio=1.0, split=1):
     global CORRUPTED_SCENES
     CORRUPTED_SCENES = _load_corrupted_scenes(cfg.output_dir)
     # load the default concept graph config
@@ -680,7 +679,7 @@ def main(cfg, start_ratio=0.0, end_ratio=1.0, split=1, engine="legacy"):
                     "clip_preprocess": clip_preprocess,
                     "clip_tokenizer": clip_tokenizer,
                 }
-                global_step = _ENGINES[engine](
+                global_step = _run_goatbench_runtime(
                     scene=scene,
                     tsdf_planner=tsdf_planner,
                     cfg=cfg,
@@ -735,13 +734,6 @@ if __name__ == "__main__":
     parser.add_argument("--start_ratio", help="start ratio", default=0.0, type=float)
     parser.add_argument("--end_ratio", help="end ratio", default=1.0, type=float)
     parser.add_argument("--split", help="which episode", default=1, type=int)
-    parser.add_argument(
-        "--engine",
-        help="execution engine",
-        default="runtime",
-        choices=["legacy", "langgraph", "runtime"],
-        type=str,
-    )
     args = parser.parse_args()
     cfg = OmegaConf.load(args.cfg_file)
     OmegaConf.resolve(cfg)
@@ -791,5 +783,4 @@ if __name__ == "__main__":
         start_ratio=args.start_ratio,
         end_ratio=args.end_ratio,
         split=args.split,
-        engine=args.engine,
     )

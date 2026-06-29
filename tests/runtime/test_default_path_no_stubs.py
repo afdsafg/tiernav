@@ -1,5 +1,8 @@
 """Default-path no-stub audit: dispatch every default tool with minimal calls."""
 
+import os
+import re
+
 import pytest
 
 from src.agent_evidence import TrajectoryEvidence
@@ -79,3 +82,74 @@ def test_real_registry_dispatches_without_not_implemented(action_type):
     assert isinstance(result, ToolResult)
     assert result.ok is True, f"{action_type} returned error: {result.error!r}"
     assert "NotImplementedError" not in result.error
+
+
+# ── Task 9: runner cutover audit ─────────────────────────────────────────
+# The runners import habitat/torch and cannot be imported in lightweight
+# tests.  Instead we audit the source text to confirm legacy/langgraph
+# paths have been removed.
+
+
+_CMA_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _read_runner_text(filename: str) -> str:
+    path = os.path.join(_CMA_DIR, filename)
+    assert os.path.isfile(path), f"runner {filename} not found at {path}"
+    with open(path, "r") as f:
+        return f.read()
+
+
+RUNNER_FILES = [
+    "run_two_tier_aeqa_evaluation.py",
+    "run_goatbench_evaluation.py",
+]
+
+
+@pytest.mark.parametrize("runner_file", RUNNER_FILES)
+def test_runner_has_no_legacy_or_langgraph_imports(runner_file):
+    """Runners must not import legacy agent_workflow/langgraph modules (Task 9)."""
+    text = _read_runner_text(runner_file)
+    assert "from src.agent_workflow import" not in text, \
+        f"{runner_file}: remove import of src.agent_workflow"
+    assert "from src.two_tier_graph.entrypoint import" not in text, \
+        f"{runner_file}: remove import of src.two_tier_graph.entrypoint"
+    assert "from src.goatbench_graph.entrypoint import" not in text, \
+        f"{runner_file}: remove import of src.goatbench_graph.entrypoint"
+
+
+@pytest.mark.parametrize("runner_file", RUNNER_FILES)
+def test_runner_has_no_legacy_or_langgraph_in_engines(runner_file):
+    """_ENGINES dict (if present) must not contain 'legacy' or 'langgraph' keys."""
+    text = _read_runner_text(runner_file)
+    # If _ENGINES still exists, it should only have "runtime"
+    engines_match = re.search(r'_ENGINES\s*=\s*\{([^}]+)\}', text)
+    if engines_match:
+        engines_body = engines_match.group(1)
+        assert '"legacy"' not in engines_body, \
+            f"{runner_file}: _ENGINES must not contain 'legacy'"
+        assert '"langgraph"' not in engines_body, \
+            f"{runner_file}: _ENGINES must not contain 'langgraph'"
+
+
+@pytest.mark.parametrize("runner_file", RUNNER_FILES)
+def test_runner_has_no_engine_cli_arg(runner_file):
+    """--engine CLI argument must have been removed (Task 9)."""
+    text = _read_runner_text(runner_file)
+    assert 'add_argument("--engine"' not in text and \
+           "add_argument('--engine'" not in text, \
+        f"{runner_file}: remove --engine CLI argument"
+
+
+@pytest.mark.parametrize("runner_file", RUNNER_FILES)
+def test_runner_uses_provider_config_for_planner(runner_file):
+    """Runtime functions must build ProviderConfig from env-var names (Task 9)."""
+    text = _read_runner_text(runner_file)
+    assert "ProviderConfig(" in text, \
+        f"{runner_file}: must use ProviderConfig for planner injection"
+    assert "QWEN_PLANNER_API_KEY" in text, \
+        f"{runner_file}: ProviderConfig must reference QWEN_PLANNER_API_KEY env var"
+    assert "QWEN_PLANNER_BASE_URL" in text, \
+        f"{runner_file}: ProviderConfig must reference QWEN_PLANNER_BASE_URL env var"
+    assert "QWEN_PLANNER_MODEL" in text, \
+        f"{runner_file}: ProviderConfig must reference QWEN_PLANNER_MODEL env var"
