@@ -67,13 +67,6 @@ def _run_aeqa_runtime(
     scene=None,
     tsdf_planner=None,
 ):
-    """Runtime engine: adapter -> RuntimeEntrypoint -> legacy dict.
-
-    Structural integration path introduced in Task 8.  Uses the AEQA task
-    adapter and RuntimeEntrypoint.with_fake_services (stable defaults) to
-    produce a correctly-shaped result dict.  Task 9 replaces the fake
-    services with habitat-backed tools and a real VLM planner.
-    """
     from src.tiernav_runtime.adapters import AEQATaskAdapter
     from src.tiernav_runtime.contracts import RunSpec
     from src.tiernav_runtime.entrypoint import (
@@ -119,21 +112,109 @@ def _run_aeqa_runtime(
         max_steps=max_total_steps,
     )
 
-    # Fake planner: submits an empty answer.  The result dict has the
-    # correct shape but not a real VLM-generated answer.  Task 9 will
-    # replace this with a PlannerClient backed by the real VLM.
-    _fake_planner = type(
-        "FakePlanner",
-        (),
-        {
-            "decide": lambda self, prompt: PlannerDecision(
-                action_type="submit_answer", arguments={"answer": ""}
-            )
-        },
-    )()
+    # --- Real production services ---
+    from src.tiernav_runtime.contracts import BenchmarkRule, MemoryScope
+    from src.tiernav_runtime.planner import PlannerClient
+    from src.tiernav_runtime.env import RuntimeEnvironmentService
+    from src.tiernav_runtime.memory import MemorySession
 
-    entrypoint = RuntimeEntrypoint.with_fake_services(_fake_planner)
-    result = entrypoint.run(spec, request)
+    # 1. Real VLM planner
+    planner = PlannerClient(provider_config)
+
+    # 2. Build Scene / TSDFPlanner (lazy — only when not pre-built)
+    scene_built = scene
+    tsdf_built = tsdf_planner
+
+    if scene_built is None or tsdf_built is None:
+        from omegaconf import OmegaConf
+
+        graph_cfg_path = getattr(cfg, "concept_graph_config_path", None)
+        if graph_cfg_path and os.path.exists(graph_cfg_path):
+            graph_cfg = OmegaConf.load(graph_cfg_path)
+            OmegaConf.resolve(graph_cfg)
+        else:
+            graph_cfg = getattr(cfg, "scene_graph", {})
+
+        from src.scene_aeqa import Scene
+        scene_built = Scene(
+            scene_id=scene_id, cfg=cfg, graph_cfg=graph_cfg,
+            detection_model=detection_model, sam_predictor=sam_predictor,
+            clip_model=clip_model, clip_preprocess=clip_preprocess,
+            clip_tokenizer=clip_tokenizer,
+        )
+
+        from src.tsdf_planner import TSDFPlanner
+        from src.geom import get_scene_bnds
+        import numpy as np
+
+        pts_np = np.array(pts_list)
+        vol_bnds, _ = get_scene_bnds(scene_built.pathfinder, floor_height=pts_np[1])
+        tsdf_built = TSDFPlanner(
+            vol_bnds=vol_bnds,
+            voxel_size=cfg.tsdf_grid_size,
+            floor_height=pts_np[1],
+            floor_height_offset=0,
+            pts_init=pts_np,
+            init_clearance=cfg.init_clearance * 2,
+            save_visualization=bool(getattr(cfg, "save_visualization", False)),
+        )
+
+    # 3. Build Executor
+    from src.agent_executor import Executor
+    from src.agent_memory import MemoryStore
+
+    memory_store = MemoryStore(
+        output_dir=os.path.join(output_dir, f"memory_{question_id}")
+    )
+    executor = Executor(
+        scene_built, tsdf_built, memory_store, cfg,
+        detection_model, sam_predictor,
+        clip_model, clip_preprocess, clip_tokenizer,
+    )
+    executor.set_state(pts_list, start_angle, 0)
+
+    # 4. Build RuntimeEnvironmentService
+    from logging import getLogger
+
+    env = RuntimeEnvironmentService.for_aeqa(
+        scene=scene_built,
+        tsdf_planner=tsdf_built,
+        executor=executor,
+        detection_model=detection_model,
+        sam_predictor=sam_predictor,
+        clip_model=clip_model,
+        clip_preprocess=clip_preprocess,
+        clip_tokenizer=clip_tokenizer,
+        logger=getLogger(__name__),
+    )
+
+    # 5. AEQA BenchmarkRule: per-question, no distance check
+    rule = BenchmarkRule(
+        success_distance_m=0.0,
+        requires_explicit_stop=False,
+        memory_scope=MemoryScope.PER_QUESTION,
+        scoring_mode="aeqa",
+    )
+
+    # 6. MemorySession (per-question independent)
+    memory_session = MemorySession(scope=MemoryScope.PER_QUESTION)
+
+    # 7. Entrypoint with real services
+    entrypoint = RuntimeEntrypoint.with_real_services(
+        planner=planner,
+        environment=env,
+        rule=rule,
+        executor=executor,
+        memory_scope_adapter=memory_session,
+    )
+
+    # 8. Session lifecycle
+    env.start_session(episode_id=question_id, initial_pose=initial_pose)
+    try:
+        result = entrypoint.run(spec, request)
+    finally:
+        env.teardown_session()
+
     return episode_result_to_legacy_dict(result, question=question)
 
 
