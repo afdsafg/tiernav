@@ -8,6 +8,7 @@ GOATBench success.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from src.tiernav_runtime.contracts import (
     BenchmarkRule,
@@ -208,7 +209,7 @@ def test_episode_result_distance_fields_settable():
 
 
 def test_episode_result_rejects_negative_distance_to_goal():
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         EpisodeResult(
             episode_id="ep-1",
             scene_id="scene",
