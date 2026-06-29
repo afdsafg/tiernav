@@ -326,3 +326,53 @@ def test_compile_rejects_non_str_policy_hint():
     msg = str(excinfo.value)
     assert "policy_hint" in msg
     assert "str" in msg
+
+
+# --- Scoring-only field exclusion ------------------------------------------
+
+
+def test_scoring_only_goal_object_ids_never_leak_into_prompt():
+    """GOATBench goal_object_ids_for_scoring are scorer-authoritative and must
+    NOT appear anywhere in the planner-visible prompt.
+
+    The compiler reads only from EpisodeState (prompt + identity fields), and
+    EpisodeState does not carry goal_metadata. So even if the originating
+    EpisodeRequest carried scoring ids in goal_metadata, they cannot reach the
+    prompt. This test pins that contract: the rendered prompt must contain the
+    planner-visible goal description but must NOT contain the scoring ids.
+    """
+    scoring_ids = ["obj-target-42", "obj-target-99"]
+    planner_visible_description = "Find the red mug on the kitchen counter."
+
+    # EpisodeState.prompt carries only the planner-visible description.
+    state = _base_state(prompt=planner_visible_description)
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema=SCHEMA)
+    rendered = render_prompt(sections)
+
+    assert planner_visible_description in rendered
+    for scoring_id in scoring_ids:
+        assert scoring_id not in rendered, (
+            f"scoring-only id {scoring_id!r} leaked into planner prompt"
+        )
+
+
+def test_task_instruction_renders_only_planner_safe_fields():
+    """task_instruction section must render only: episode_id, scene_id,
+    task_name, task_mode, prompt — never goal_metadata / scoring ids."""
+    state = _base_state(prompt="Where is the lamp?")
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema=SCHEMA)
+    task = {s.name: s for s in sections}["task_instruction"]
+
+    # Planner-safe identity fields are present.
+    assert "episode_id: ep-1" in task.content
+    assert "scene_id: scene-1" in task.content
+    assert "task_name: aeqa" in task.content
+    assert "task_mode: question_answering" in task.content
+    assert "prompt: Where is the lamp?" in task.content
+    # No goal_metadata / scoring surface is rendered.
+    assert "goal_metadata" not in task.content
+    assert "goal_object_ids_for_scoring" not in task.content

@@ -11,9 +11,11 @@ always snapshot ids derived from real :class:`Observation` image_ids.
 """
 from __future__ import annotations
 
+from typing import Any, Callable, Optional
+
 from pydantic import Field
 
-from .contracts import ConfidenceScore, MemoryPack, Observation, RuntimeModel
+from .contracts import ConfidenceScore, MemoryPack, MemoryScope, Observation, RuntimeModel
 
 
 # --- Node models -----------------------------------------------------------
@@ -216,3 +218,106 @@ class MemoryService:
             base = "fallback reuse of existing snapshots"
             return f"{base} from room(s): {rooms}" if rooms else base
         return f"reuse snapshots from room(s): {rooms}" if rooms else "reuse existing snapshots"
+
+
+# --- Session ---------------------------------------------------------------
+
+
+class MemorySession:
+    """Episode-scoped ownership of a :class:`MemoryService`.
+
+    Encapsulates the benchmark-dependent lifetime of spatial memory:
+
+    - ``MemoryScope.PER_QUESTION`` (AEQA): each ``start_session`` creates a
+      fresh :class:`MemoryService`. Nothing carries over between questions,
+      even within the same episode — each question is scored independently.
+    - ``MemoryScope.SUBTASK_SEQUENCE`` (GOATBench): the same
+      :class:`MemoryService` (and the injected ``notebook`` /
+      ``scene_graph``) is reused across subtasks of one episode; a new
+      ``episode_id`` resets the memory.
+
+    The session also bridges real observations into the active memory layer by
+    delegating :meth:`update_from_observation` and :meth:`query` to the active
+    :class:`MemoryService`, so callers (e.g. the graph) can talk to the
+    session as if it were the service.
+
+    ``notebook`` and ``scene_graph`` are duck-typed and owned by the session
+    for the duration of the session object's lifetime. They are only meaningfully
+    populated for ``SUBTASK_SEQUENCE``; for ``PER_QUESTION`` they remain
+    ``None`` (AEQA has no cross-question reuse). Task 8 (adapters) injects the
+    real ``Notebook`` / ``SceneGraphMemory`` instances.
+    """
+
+    def __init__(
+        self,
+        scope: MemoryScope,
+        memory_factory: Callable[..., MemoryService] = MemoryService,
+        notebook: Optional[Any] = None,
+        scene_graph: Optional[Any] = None,
+    ) -> None:
+        self.scope: MemoryScope = scope
+        self._memory_factory = memory_factory
+        # notebook/scene_graph only meaningful for SUBTASK_SEQUENCE.
+        self.notebook: Optional[Any] = notebook if scope is MemoryScope.SUBTASK_SEQUENCE else None
+        self.scene_graph: Optional[Any] = (
+            scene_graph if scope is MemoryScope.SUBTASK_SEQUENCE else None
+        )
+        self._active: Optional[MemoryService] = None
+        self._episode_id: Optional[str] = None
+
+    @property
+    def current_memory(self) -> MemoryService:
+        """The active :class:`MemoryService` for the current session.
+
+        Raises if called before :meth:`start_session` — the graph must open a
+        session before reading or writing memory.
+        """
+        if self._active is None:
+            raise RuntimeError(
+                "MemorySession.start_session must be called before accessing memory"
+            )
+        return self._active
+
+    def start_session(
+        self,
+        episode_id: str,
+        *,
+        question_id: Optional[str] = None,
+        subtask_index: Optional[int] = None,
+    ) -> MemoryService:
+        """Open a memory session for one question or subtask.
+
+        - ``PER_QUESTION``: always create a fresh :class:`MemoryService`.
+        - ``SUBTASK_SEQUENCE``: reuse the existing service if ``episode_id``
+          matches the previous call; otherwise create a fresh one.
+
+        Returns the active :class:`MemoryService`.
+        """
+        if self.scope is MemoryScope.PER_QUESTION:
+            self._active = self._memory_factory()
+            self._episode_id = episode_id
+            return self._active
+
+        # SUBTASK_SEQUENCE: persist across subtasks within the same episode.
+        if self._active is not None and episode_id == self._episode_id:
+            return self._active
+        self._active = self._memory_factory()
+        self._episode_id = episode_id
+        return self._active
+
+    # -- delegation: bridge observations into the active service ------------
+
+    def update_from_observation(
+        self,
+        observation: Observation,
+        action_type: str,
+        round_index: int,
+    ) -> None:
+        """Bridge a real observation into the active :class:`MemoryService`."""
+        self.current_memory.update_from_observation(
+            observation, action_type=action_type, round_index=round_index
+        )
+
+    def query(self, query: str) -> MemoryPack:
+        """Query the active :class:`MemoryService`."""
+        return self.current_memory.query(query)

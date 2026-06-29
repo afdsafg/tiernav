@@ -32,7 +32,7 @@ from .contracts import (
     ToolCall,
     ToolResult,
 )
-from .memory import MemoryService
+from .memory import MemoryService, MemorySession
 from .policy import PolicyDecision, WorkflowPolicy
 from .tools import ToolRegistry
 
@@ -73,6 +73,11 @@ class RuntimeServices:
     policy: WorkflowPolicy
     context: ContextCompiler | None = None
     environment: object | None = None
+    # ponytail: Task 8 (adapters) wires a MemorySession here to give the graph
+    # benchmark-correct memory lifetime (AEQA per-question reset vs GOATBench
+    # cross-subtask persistence). Until then, graph nodes keep reading/writing
+    # `memory` directly, so existing behavior is unchanged.
+    memory_session: MemorySession | None = None
 
     def __post_init__(self) -> None:
         if self.context is None:

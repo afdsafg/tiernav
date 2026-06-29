@@ -3,10 +3,15 @@ from __future__ import annotations
 
 import pytest
 
-from src.tiernav_runtime.contracts import MemoryPack, Observation
+from src.tiernav_runtime.contracts import (
+    MemoryPack,
+    MemoryScope,
+    Observation,
+)
 from src.tiernav_runtime.memory import (
     HypothesisNode,
     MemoryService,
+    MemorySession,
     ObjectNode,
     RoomNode,
     SnapshotNode,
@@ -279,3 +284,168 @@ def test_evidence_only_uses_real_observation_ids():
     for eid in pack.evidence_ids:
         assert eid.startswith("snap-")
         assert eid.replace("snap-", "", 1) in {"img-1", "img-2"}
+
+
+# --- MemorySession: AEQA per-question reset --------------------------------
+
+
+def _obs_with(summary: str, image_id: str = "img-1") -> Observation:
+    return _observation(
+        summary=summary,
+        image_ids=[image_id],
+        object_ids=["obj-sofa"],
+        room_id="room-A",
+    )
+
+
+def test_aeqa_memory_resets_per_question():
+    """PER_QUESTION scope: each start_session yields a fresh MemoryService.
+
+    An observation written under q1 must NOT be visible after start_session
+    for q2 — even within the same episode.
+    """
+    session = MemorySession(scope=MemoryScope.PER_QUESTION)
+
+    mem_q1 = session.start_session(episode_id="ep-1", question_id="q1")
+    mem_q1.update_from_observation(
+        _obs_with("sofa near window"), action_type="explore_frontier", round_index=0
+    )
+    assert mem_q1.query("sofa").evidence_ids  # sanity: q1 has the observation
+
+    mem_q2 = session.start_session(episode_id="ep-1", question_id="q2")
+    pack = mem_q2.query("sofa")
+    # Fresh memory: no evidence carried over from q1.
+    assert pack.evidence_ids == []
+    assert pack.summary == ""
+    # The previously active service is detached: mutating it must not leak.
+    mem_q1.update_from_observation(
+        _obs_with("later sofa", image_id="img-late"),
+        action_type="explore_frontier",
+        round_index=0,
+    )
+    assert session.current_memory.query("sofa").evidence_ids == []
+
+
+def test_aeqa_session_current_memory_matches_returned_service():
+    session = MemorySession(scope=MemoryScope.PER_QUESTION)
+    mem = session.start_session(episode_id="ep-1", question_id="q1")
+    assert session.current_memory is mem
+
+
+# --- MemorySession: GOATBench cross-subtask persistence ---------------------
+
+
+def test_goatbench_memory_persists_across_subtasks():
+    """SUBTASK_SEQUENCE scope: same episode -> same MemoryService across subtasks.
+
+    An observation written under subtask 0 must remain queryable under subtask 1.
+    """
+    session = MemorySession(scope=MemoryScope.SUBTASK_SEQUENCE)
+
+    mem0 = session.start_session(episode_id="ep-1", subtask_index=0)
+    mem0.update_from_observation(
+        _obs_with("sofa near window", image_id="img-0"),
+        action_type="explore_frontier",
+        round_index=0,
+    )
+    assert mem0.query("sofa").evidence_ids
+
+    mem1 = session.start_session(episode_id="ep-1", subtask_index=1)
+    # Same underlying MemoryService instance: persisted across subtasks.
+    assert mem1 is mem0
+    pack = mem1.query("sofa")
+    assert "snap-img-0" in pack.evidence_ids
+    assert "sofa near window" in pack.summary
+
+
+def test_goatbench_memory_resets_on_new_episode():
+    """SUBTASK_SEQUENCE: a new episode_id resets the MemoryService."""
+    session = MemorySession(scope=MemoryScope.SUBTASK_SEQUENCE)
+
+    mem_ep1 = session.start_session(episode_id="ep-1", subtask_index=0)
+    mem_ep1.update_from_observation(
+        _obs_with("sofa near window", image_id="img-0"),
+        action_type="explore_frontier",
+        round_index=0,
+    )
+    assert mem_ep1.query("sofa").evidence_ids
+
+    mem_ep2 = session.start_session(episode_id="ep-2", subtask_index=0)
+    assert mem_ep2 is not mem_ep1
+    pack = mem_ep2.query("sofa")
+    assert pack.evidence_ids == []
+    assert pack.summary == ""
+
+
+def test_goatbench_session_holds_notebook_and_scene_graph_across_subtasks():
+    """GOATBench reuses Notebook and SceneGraphMemory across subtasks in one episode.
+
+    The session owns these instances; subtask transitions within the same
+    episode must NOT recreate them.
+    """
+    notebook = object()  # duck-typed placeholder; session just holds it
+    scene_graph = object()
+    session = MemorySession(
+        scope=MemoryScope.SUBTASK_SEQUENCE,
+        notebook=notebook,
+        scene_graph=scene_graph,
+    )
+
+    session.start_session(episode_id="ep-1", subtask_index=0)
+    assert session.notebook is notebook
+    assert session.scene_graph is scene_graph
+
+    session.start_session(episode_id="ep-1", subtask_index=1)
+    # Same instances persist across subtasks within the episode.
+    assert session.notebook is notebook
+    assert session.scene_graph is scene_graph
+
+    # New episode: memory resets, but the held notebook/scene_graph instances
+    # are owned by the session and persist for the session's lifetime. Task 8
+    # decides whether to replace them per episode; the session itself does not.
+    session.start_session(episode_id="ep-2", subtask_index=0)
+    assert session.notebook is notebook
+    assert session.scene_graph is scene_graph
+
+
+def test_aeqa_session_does_not_hold_notebook_or_scene_graph():
+    """PER_QUESTION scope has no cross-question reuse; notebook/scene_graph stay None."""
+    session = MemorySession(scope=MemoryScope.PER_QUESTION)
+    assert session.notebook is None
+    assert session.scene_graph is None
+    session.start_session(episode_id="ep-1", question_id="q1")
+    assert session.notebook is None
+    assert session.scene_graph is None
+
+
+# --- Memory bridge: real observations flow into the active service ----------
+
+
+def test_session_update_from_observation_updates_active_memory_layers():
+    """The session delegates update_from_observation to its active MemoryService,
+    bridging real observations into room/snapshot/object layers."""
+    session = MemorySession(scope=MemoryScope.PER_QUESTION)
+    session.start_session(episode_id="ep-1", question_id="q1")
+
+    session.update_from_observation(
+        _obs_with("sofa near window", image_id="img-1"),
+        action_type="explore_frontier",
+        round_index=0,
+    )
+    mem = session.current_memory
+    assert "room-A" in mem.rooms
+    assert "snap-img-1" in mem.snapshots
+    assert "obj-sofa" in mem.objects
+
+
+def test_session_query_delegates_to_active_memory():
+    session = MemorySession(scope=MemoryScope.PER_QUESTION)
+    session.start_session(episode_id="ep-1", question_id="q1")
+    session.update_from_observation(
+        _obs_with("sofa near window", image_id="img-1"),
+        action_type="explore_frontier",
+        round_index=0,
+    )
+    pack = session.query("sofa")
+    assert isinstance(pack, MemoryPack)
+    assert "snap-img-1" in pack.evidence_ids
