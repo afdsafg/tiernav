@@ -677,3 +677,83 @@ def test_fallback_node_sets_submitted_explicitly_false():
     assert state["success"] is False
     assert state["answer"] == "unanswerable"
     assert state.get("submitted_explicitly", True) is False
+
+
+# ── End-to-end smoke tests ────────────────────────────────────────────────
+
+
+def test_aeqa_runtime_smoke_with_fake_services():
+    """Full AEQA smoke: FakePlanner explore_frontier -> submit_answer("chair") -> success.
+
+    Exercises the complete runtime graph topology for AEQA with a
+    SuccessEvaluator (BenchmarkRule). Verifies the full path: tool dispatch,
+    observe, plan, submit, finalize, including distance (irrelevant for AEQA
+    but the node should set it to None).
+    """
+    evaluator = _aeqa_evaluator()
+    planner = FakePlanner(
+        [
+            PlannerDecision(
+                action_type="explore_frontier",
+                arguments={"frontier_id": "f1"},
+            ),
+            PlannerDecision(
+                action_type="submit_answer",
+                arguments={"answer": "chair"},
+            ),
+        ]
+    )
+    services = _services_with_evaluator(planner, evaluator)
+    final_state = _run(services, _spec(), _request())
+    state = final_state["state"]
+
+    assert state["terminal"] is True
+    assert state["success"] is True
+    assert state["answer"] == "chair"
+    assert state["step_index"] == 1
+    assert state["submitted_explicitly"] is True
+    # AEQA distance is irrelevant; should remain None.
+    assert state["distance_to_goal"] is None
+
+
+def test_goatbench_runtime_smoke_with_fake_services():
+    """GOATBench smoke: FakePlanner navigate -> submit, distance check within threshold.
+
+    Exercises the complete runtime graph topology for GOATBench with a
+    SuccessEvaluator (BenchmarkRule, success_distance_m=1.0). Sets up a fake
+    env with known poses so the distance is computed inside the graph.
+    Verifies the evaluator's distance check runs and marks success.
+    """
+    evaluator = _goat_evaluator(distance_m=1.0)
+    env = _fake_env_with_distance(
+        current_pose={"x": 0.0, "y": 0.0, "theta": 0.0},
+        goal_pose={"x": 0.5, "y": 0.0, "theta": 0.0},
+    )
+    # distance = sqrt((0.5-0)^2 + (0-0)^2) = 0.5 <= 1.0 -> success.
+    planner = FakePlanner(
+        [
+            PlannerDecision(
+                action_type="navigate_to_object",
+                arguments={"object_name": "chair"},
+            ),
+            PlannerDecision(
+                action_type="submit_answer",
+                arguments={"answer": "arrived"},
+            ),
+        ]
+    )
+    services = _services_with_evaluator(planner, evaluator, environment=env)
+    request = EpisodeRequest(
+        episode_id="ep-goat-smoke",
+        scene_id="scene-1",
+        task_name="goatbench",
+        task_mode=TaskMode.GOAL_NAVIGATION,
+        prompt="navigate to the chair",
+    )
+    final_state = _run(services, _spec(), request)
+    state = final_state["state"]
+
+    assert state["terminal"] is True
+    assert state["success"] is True
+    assert state["distance_to_goal"] == 0.5
+    assert state["submitted_explicitly"] is True
