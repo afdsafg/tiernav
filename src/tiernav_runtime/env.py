@@ -147,29 +147,24 @@ class RuntimeEnvironmentService:
         self,
         episode_id: str,
         *,
-        subtask_index: int = 0,
         initial_pose: Optional[dict[str, float]] = None,
     ) -> None:
         """Begin (or continue) a session.
 
         AEQA: every call resets pose/path_length — each question is independent.
-        GOATBench: only the first subtask of an episode seeds state; later
-        subtasks thread pose/path_length from where the prior subtask ended.
+        GOATBench: only the first call of a new episode seeds state; later
+        same-episode calls thread pose/path_length from where the prior
+        subtask ended.
         """
         self._is_torn_down = False
 
         if self._task_mode is TaskMode.QUESTION_ANSWERING:
             self._reset_session(initial_pose or {})
         else:
-            # GOATBench: thread across subtasks within one episode.
-            new_episode = episode_id != self._episode_id
-            if new_episode or subtask_index == 0:
-                # First subtask of a new episode seeds initial pose and resets
-                # path_length only when entering a fresh episode.
-                if new_episode:
-                    self._reset_session(initial_pose or {})
-                # Same-episode subtask 0 re-entry: keep threading.
-            # Subsequent subtask: preserve pose/path_length.
+            # GOATBench: thread across subtasks within one episode; reset
+            # only when entering a fresh episode.
+            if episode_id != self._episode_id:
+                self._reset_session(initial_pose or {})
 
         self._episode_id = episode_id
 
@@ -184,14 +179,6 @@ class RuntimeEnvironmentService:
             except TypeError:
                 # Executor signature mismatch — leave pose bookkeeping to env.
                 pass
-
-    def advance_pose(
-        self, pose: dict[str, float], *, path_length: Optional[float] = None
-    ) -> None:
-        """Update current pose (and optionally path_length) after motion."""
-        self._current_pose = dict(pose)
-        if path_length is not None:
-            self._path_length = float(path_length)
 
     def teardown_session(self) -> None:
         """Clean up scene resources. Idempotent."""

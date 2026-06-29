@@ -386,13 +386,26 @@ def test_aeqa_start_session_resets_pose_and_path_length():
 def test_goatbench_start_session_threads_pose_across_subtasks():
     env = _goat_env()
     env.start_session("ep-1", initial_pose={"x": 0.0, "y": 0.0, "theta": 0.0})
-    # Simulate movement during subtask 1.
-    env.advance_pose({"x": 3.0, "y": 4.0, "theta": 1.0}, path_length=5.0)
+    # Simulate movement during subtask 1 by priming internal state directly
+    # (no public setter exists by design — pose is advanced by the graph).
+    env._current_pose = {"x": 3.0, "y": 4.0, "theta": 1.0}
+    env._path_length = 5.0
 
     # Subtask 2 within same episode: pose must thread, NOT reset.
-    env.start_session("ep-1", subtask_index=1, initial_pose={"x": 0.0, "y": 0.0, "theta": 0.0})
+    env.start_session("ep-1", initial_pose={"x": 0.0, "y": 0.0, "theta": 0.0})
     assert env.current_pose == {"x": 3.0, "y": 4.0, "theta": 1.0}
     assert env.path_length == 5.0
+
+
+def test_goatbench_start_session_resets_on_new_episode():
+    env = _goat_env()
+    env.start_session("ep-1", initial_pose={"x": 1.0, "y": 2.0, "theta": 0.5})
+    env._path_length = 7.0
+
+    # New episode: fresh start must reset pose/path_length.
+    env.start_session("ep-2", initial_pose={"x": 9.0, "y": 8.0, "theta": 0.0})
+    assert env.current_pose == {"x": 9.0, "y": 8.0, "theta": 0.0}
+    assert env.path_length == 0.0
 
 
 def test_teardown_session_calls_scene_cleanup_and_marks_torn_down():
