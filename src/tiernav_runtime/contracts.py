@@ -225,6 +225,11 @@ class EpisodeState(RuntimeModel):
     success: bool = False
     answer: str = ""
     failure_type: str = ""
+    # Scoring-only fields kept out of prompt context. The context compiler
+    # renders only task_instruction fields (episode_id, scene_id, task_name,
+    # task_mode, prompt) — these are never part of the rendering.
+    distance_to_goal: Optional[NonNegativeFloat] = None
+    submitted_explicitly: bool = False
 
 
 class EpisodeResult(RuntimeModel):

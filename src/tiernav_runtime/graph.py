@@ -34,6 +34,7 @@ from .contracts import (
 )
 from .memory import MemoryService, MemorySession
 from .policy import PolicyDecision, WorkflowPolicy
+from .success import SuccessEvaluator
 from .tools import ToolRegistry
 
 
@@ -78,6 +79,9 @@ class RuntimeServices:
     # cross-subtask persistence). Until then, graph nodes keep reading/writing
     # `memory` directly, so existing behavior is unchanged.
     memory_session: MemorySession | None = None
+    # Task 7: wire success evaluation through the graph. When None, the graph
+    # falls back to legacy AEQA logic (answer non-empty = success).
+    success_evaluator: SuccessEvaluator | None = None
 
     def __post_init__(self) -> None:
         if self.context is None:
@@ -204,6 +208,23 @@ def execute_tool_node(
             episode.success = False
             episode.failure_type = episode.failure_type or result.error
 
+    # Track whether this step was an explicit submit. The finalize_node
+    # uses this to inform the SuccessEvaluator (GOATBench requires
+    # explicit-planner-stop).
+    episode.submitted_explicitly = (
+        result.terminal
+        and result.ok
+        and decision.action_type == "submit_answer"
+    )
+
+    # Compute agent-to-goal distance when the environment service is
+    # available (GOATBench episodes). Skip when env is None (fake path).
+    env = services.environment
+    if env is not None and hasattr(env, "distance_to_goal"):
+        dist = env.distance_to_goal()
+        if dist is not None:
+            episode.distance_to_goal = dist
+
     episode.step_index += 1
     return {"state": episode.model_dump(mode="json")}
 
@@ -218,6 +239,7 @@ def fallback_node(
     episode.success = False
     episode.answer = "unanswerable"
     episode.failure_type = policy.reason
+    episode.submitted_explicitly = False
     return {"state": episode.model_dump(mode="json")}
 
 
@@ -232,6 +254,7 @@ def recover_stall_node(
 def finalize_node(
     graph_state: RuntimeGraphState, config: RunnableConfig
 ) -> RuntimeGraphState:
+    services = _services(config)
     episode = EpisodeState.model_validate(graph_state["state"])
 
     # fallback_node (or a terminal execute_tool result) may have already
@@ -240,6 +263,42 @@ def finalize_node(
     if episode.terminal:
         return {"state": episode.model_dump(mode="json")}
 
+    # --- Evaluator path (real services) ---
+    # When a SuccessEvaluator is injected, use it for both AEQA and
+    # GOATBench success verdicts. Distance is accumulated by
+    # execute_tool_node (updated each round for navigation actions);
+    # submitted_explicitly derives from the planner decision here.
+    evaluator = services.success_evaluator
+    if evaluator is not None:
+        decision: PlannerDecision = episode.current_decision  # type: ignore[assignment]
+        submitted_explicitly = (
+            decision is not None
+            and decision.action_type == "submit_answer"
+        )
+        answer = str(decision.arguments.get("answer", "") or "")
+        if submitted_explicitly:
+            episode.answer = answer
+
+        # Refresh distance from environment when available (GOATBench).
+        env = services.environment
+        if env is not None and hasattr(env, "distance_to_goal"):
+            dist = env.distance_to_goal()
+            if dist is not None:
+                episode.distance_to_goal = dist
+
+        verdict = evaluator.evaluate(
+            episode.task_mode,
+            submitted_explicitly=submitted_explicitly,
+            answer=episode.answer,
+            distance_to_goal=episode.distance_to_goal,
+        )
+        episode.terminal = True
+        episode.success = verdict.success
+        episode.failure_type = episode.failure_type or verdict.reason
+        episode.submitted_explicitly = submitted_explicitly
+        return {"state": episode.model_dump(mode="json")}
+
+    # --- Legacy AEQA path (fake services, no evaluator) ---
     decision: PlannerDecision = episode.current_decision  # type: ignore[assignment]
     answer = str(decision.arguments.get("answer", "") or "")
     episode.terminal = True

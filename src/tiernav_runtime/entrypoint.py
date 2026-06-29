@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import (
+    BenchmarkRule,
     EpisodeRequest,
     EpisodeResult,
     EpisodeState,
@@ -22,10 +23,11 @@ from .contracts import (
 )
 from .events import make_event
 from .graph import RuntimeServices, build_runtime_graph
-from .memory import MemoryService
+from .memory import MemoryService, MemorySession
 from .policy import WorkflowPolicy
 from .recorder import EpisodeRecorder
-from .tools import ToolRegistry
+from .success import SuccessEvaluator
+from .tools import ToolRegistry, build_real_tool_registry
 
 
 class RuntimeEntrypoint:
@@ -72,6 +74,34 @@ class RuntimeEntrypoint:
             memory=memory if memory is not None else MemoryService(),
             policy=policy if policy is not None else WorkflowPolicy(),
             environment=environment,
+        )
+        return cls(services)
+
+    @classmethod
+    def with_real_services(
+        cls,
+        planner: Any,
+        environment: Any,
+        rule: BenchmarkRule,
+        executor: Any,
+        *,
+        memory_scope_adapter: MemorySession | None = None,
+        policy: WorkflowPolicy | None = None,
+    ) -> "RuntimeEntrypoint":
+        """Build an entrypoint backed by real production services.
+
+        Wires the full service stack: real executor-backed tool registry,
+        SuccessEvaluator, environment service, and optional MemorySession.
+        The graph consumes these services through RuntimeServices.
+        """
+        services = RuntimeServices(
+            planner=planner,
+            tools=build_real_tool_registry(executor),
+            memory=MemoryService(),
+            policy=policy if policy is not None else WorkflowPolicy(),
+            environment=environment,
+            memory_session=memory_scope_adapter,
+            success_evaluator=SuccessEvaluator(rule),
         )
         return cls(services)
 
@@ -143,6 +173,8 @@ class RuntimeEntrypoint:
             path_length=float(state.step_index),
             failure_type=state.failure_type,
             event_log_path=str(event_log_path),
+            distance_to_goal=state.distance_to_goal,
+            submit_was_explicit=state.submitted_explicitly,
         )
 
 

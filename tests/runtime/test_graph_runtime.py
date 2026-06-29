@@ -423,3 +423,257 @@ def test_teardown_session_idempotent():
     # Second teardown must not re-call cleanup.
     env.teardown_session()
     assert env.scene.cleanup_called is True
+
+
+# ── Real-service graph node tests (Task 7) ────────────────────────────────
+
+
+from src.tiernav_runtime.contracts import BenchmarkRule, MemoryScope, TaskMode
+from src.tiernav_runtime.success import SuccessEvaluator
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────
+
+
+def _aeqa_evaluator() -> SuccessEvaluator:
+    """SuccessEvaluator for AEQA (QUESTION_ANSWERING). Distance irrelevant."""
+    return SuccessEvaluator(
+        BenchmarkRule(
+            success_distance_m=1.0,
+            requires_explicit_stop=False,
+            memory_scope=MemoryScope.PER_QUESTION,
+            scoring_mode="aeqa",
+        )
+    )
+
+
+def _goat_evaluator(distance_m: float = 1.0) -> SuccessEvaluator:
+    """SuccessEvaluator for GOATBench with a configurable success distance."""
+    return SuccessEvaluator(
+        BenchmarkRule(
+            success_distance_m=distance_m,
+            requires_explicit_stop=True,
+            memory_scope=MemoryScope.SUBTASK_SEQUENCE,
+            scoring_mode="goatbench_spl",
+        )
+    )
+
+
+def _services_with_evaluator(
+    planner: FakePlanner,
+    evaluator: SuccessEvaluator,
+    *,
+    environment: object | None = None,
+) -> RuntimeServices:
+    return RuntimeServices(
+        planner=planner,
+        tools=with_stable_defaults(),
+        memory=MemoryService(enabled=True),
+        policy=WorkflowPolicy(),
+        success_evaluator=evaluator,
+        environment=environment,
+    )
+
+
+def _fake_env_with_distance(
+    current_pose: dict | None = None,
+    goal_pose: dict | None = None,
+) -> RuntimeEnvironmentService:
+    """Create a RuntimeEnvironmentService with preset poses for testing."""
+    env = _goat_env()
+    if current_pose is not None:
+        env._current_pose = dict(current_pose)
+    if goal_pose is not None:
+        env._goal_pose = dict(goal_pose)
+    return env
+
+
+# ── Success evaluator tests ───────────────────────────────────────────────
+
+
+def test_runtime_graph_uses_success_evaluator_when_injected():
+    """AEQA: submit_answer with evaluator → success based on verdict."""
+    evaluator = _aeqa_evaluator()
+    planner = FakePlanner(
+        [PlannerDecision(action_type="submit_answer", arguments={"answer": "mug"})]
+    )
+    services = _services_with_evaluator(planner, evaluator)
+    final_state = _run(services, _spec(), _request())
+    state = final_state["state"]
+
+    assert state["terminal"] is True
+    assert state["success"] is True
+    assert state["answer"] == "mug"
+    assert state["submitted_explicitly"] is True
+
+
+def test_runtime_graph_evaluator_empty_answer_is_failure():
+    """AEQA: submit_answer with empty answer → evaluator rejects."""
+    evaluator = _aeqa_evaluator()
+    planner = FakePlanner(
+        [PlannerDecision(action_type="submit_answer", arguments={})]
+    )
+    services = _services_with_evaluator(planner, evaluator)
+    final_state = _run(services, _spec(), _request())
+    state = final_state["state"]
+
+    assert state["terminal"] is True
+    assert state["success"] is False
+    assert state["failure_type"] == "no_answer"
+
+
+def test_runtime_graph_falls_back_to_aeqa_logic_when_no_evaluator():
+    """Without evaluator, old AEQA answer-nonempty logic still works."""
+    planner = FakePlanner(
+        [
+            PlannerDecision(
+                action_type="explore_frontier", arguments={"frontier_id": "f1"}
+            ),
+            PlannerDecision(
+                action_type="submit_answer", arguments={"answer": "mug"}
+            ),
+        ]
+    )
+    services = _services(planner)  # no evaluator
+    final_state = _run(services, _spec(), _request())
+    state = final_state["state"]
+
+    assert state["terminal"] is True
+    assert state["success"] is True
+    assert state["answer"] == "mug"
+    # submitted_explicitly not set in old path
+    assert state.get("submitted_explicitly", False) is False
+
+
+def test_goatbench_finalize_node_uses_distance():
+    """GOATBench: distance below threshold → success; above → failure."""
+    evaluator = _goat_evaluator(distance_m=1.0)
+    # Set up an env with a computed distance. The fake env computes
+    # Euclidean distance from current_pose to goal_pose.
+    env = _fake_env_with_distance(
+        current_pose={"x": 0.0, "y": 0.0, "theta": 0.0},
+        goal_pose={"x": 0.5, "y": 0.0, "theta": 0.0},
+    )
+    # distance = sqrt((0.5)^2 + 0) = 0.5, which is ≤ 1.0 → success.
+    planner = FakePlanner(
+        [PlannerDecision(action_type="submit_answer", arguments={"answer": "arrived"})]
+    )
+    services = _services_with_evaluator(planner, evaluator, environment=env)
+    # Set task_mode to GOAL_NAVIGATION for the evaluator.
+    request = EpisodeRequest(
+        episode_id="ep-goat-1",
+        scene_id="scene-1",
+        task_name="goatbench",
+        task_mode=TaskMode.GOAL_NAVIGATION,
+        prompt="navigate to the chair",
+    )
+    final_state = _run(services, _spec(), request)
+    state = final_state["state"]
+
+    assert state["terminal"] is True
+    assert state["success"] is True
+    assert state["distance_to_goal"] == 0.5
+
+
+def test_goatbench_distance_exceeded_is_failure():
+    """GOATBench: distance above threshold → failure."""
+    evaluator = _goat_evaluator(distance_m=1.0)
+    env = _fake_env_with_distance(
+        current_pose={"x": 0.0, "y": 0.0, "theta": 0.0},
+        goal_pose={"x": 3.0, "y": 4.0, "theta": 0.0},
+    )
+    # distance = sqrt(3^2 + 4^2) = 5.0 > 1.0 → failure.
+    planner = FakePlanner(
+        [PlannerDecision(action_type="submit_answer", arguments={"answer": "arrived"})]
+    )
+    services = _services_with_evaluator(planner, evaluator, environment=env)
+    request = EpisodeRequest(
+        episode_id="ep-goat-2",
+        scene_id="scene-1",
+        task_name="goatbench",
+        task_mode=TaskMode.GOAL_NAVIGATION,
+        prompt="navigate to the chair",
+    )
+    final_state = _run(services, _spec(), request)
+    state = final_state["state"]
+
+    assert state["terminal"] is True
+    assert state["success"] is False
+    assert state["failure_type"] == "distance_exceeded"
+
+
+def test_execute_tool_node_computes_distance_from_env_when_available():
+    """execute_tool_node updates distance_to_goal from env after each tool."""
+    evaluator = _goat_evaluator(distance_m=2.0)
+    env = _fake_env_with_distance(
+        current_pose={"x": 1.0, "y": 1.0, "theta": 0.0},
+        goal_pose={"x": 4.0, "y": 5.0, "theta": 0.0},
+    )
+    # distance = sqrt((4-1)^2 + (5-1)^2) = sqrt(9+16) = 5.0
+    planner = FakePlanner(
+        [
+            PlannerDecision(
+                action_type="navigate_to_object",
+                arguments={"object_name": "chair"},
+            ),
+            PlannerDecision(
+                action_type="submit_answer", arguments={"answer": "arrived"}
+            ),
+        ]
+    )
+    services = _services_with_evaluator(planner, evaluator, environment=env)
+    request = EpisodeRequest(
+        episode_id="ep-goat-3",
+        scene_id="scene-1",
+        task_name="goatbench",
+        task_mode=TaskMode.GOAL_NAVIGATION,
+        prompt="navigate to the chair",
+    )
+    final_state = _run(services, _spec(), request)
+    state = final_state["state"]
+
+    # Distance should have been computed in execute_tool_node after the nav tool.
+    # The final submit_answer also refreshes distance in finalize_node, giving the
+    # same value (pose hasn't changed since no real movement).
+    assert state["terminal"] is True
+    assert state["distance_to_goal"] == 5.0
+    assert state["success"] is False  # 5.0 > 2.0
+    assert state["failure_type"] == "distance_exceeded"
+
+
+def test_execute_tool_skips_distance_when_no_environment():
+    """When environment is None, no distance is computed (fake path)."""
+    planner = FakePlanner(
+        [
+            PlannerDecision(
+                action_type="navigate_to_object",
+                arguments={"object_name": "chair"},
+            ),
+            PlannerDecision(
+                action_type="submit_answer", arguments={"answer": "mug"}
+            ),
+        ]
+    )
+    services = _services(planner)  # no environment
+    final_state = _run(services, _spec(), _request())
+    state = final_state["state"]
+
+    assert state["terminal"] is True
+    assert state["success"] is True
+    assert state["answer"] == "mug"
+    assert state["distance_to_goal"] is None
+
+
+def test_fallback_node_sets_submitted_explicitly_false():
+    """fallback_node marks the episode as not explicitly submitted."""
+    planner = FakePlanner(
+        [PlannerDecision(action_type="explore_frontier")]
+    )
+    services = _services(planner)
+    final_state = _run(services, _spec(max_rounds=1), _request())
+    state = final_state["state"]
+
+    assert state["terminal"] is True
+    assert state["success"] is False
+    assert state["answer"] == "unanswerable"
+    assert state.get("submitted_explicitly", True) is False

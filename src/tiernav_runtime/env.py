@@ -62,6 +62,7 @@ class RuntimeEnvironmentService:
 
         self._current_pose: dict[str, float] = {}
         self._path_length: float = 0.0
+        self._goal_pose: Optional[dict[str, float]] = None
         self._episode_id: Optional[str] = None
         self._is_torn_down: bool = False
 
@@ -78,6 +79,32 @@ class RuntimeEnvironmentService:
     @property
     def path_length(self) -> float:
         return self._path_length
+
+    @property
+    def goal_pose(self) -> Optional[dict[str, float]]:
+        return dict(self._goal_pose) if self._goal_pose is not None else None
+
+    def set_goal_pose(self, pose: Optional[dict[str, float]]) -> None:
+        """Set the goal pose for distance computation.
+        
+        Set during session start from EpisodeRequest.goal_metadata. Tests
+        may set a fake goal_pose directly.
+        """
+        self._goal_pose = dict(pose) if pose is not None else None
+
+    def distance_to_goal(self) -> Optional[float]:
+        """Euclidean distance (XY) from current_pose to goal_pose.
+        
+        Returns None when either pose is missing, so the evaluator can
+        distinguish "no measurement" from "far from goal".
+        """
+        if not self._current_pose:
+            return None
+        if self._goal_pose is None:
+            return None
+        dx = self._current_pose.get("x", 0.0) - self._goal_pose.get("x", 0.0)
+        dy = self._current_pose.get("y", 0.0) - self._goal_pose.get("y", 0.0)
+        return (dx * dx + dy * dy) ** 0.5
 
     @property
     def is_torn_down(self) -> bool:
