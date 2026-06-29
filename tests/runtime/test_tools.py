@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.agent_evidence import TrajectoryEvidence
 from src.agent_planner import PlannerAction
 from src.tiernav_runtime.contracts import (
     PlannerDecision,
@@ -15,6 +16,7 @@ from src.tiernav_runtime.tools import (
     RuntimeTool,
     SubmitAnswerTool,
     ToolRegistry,
+    build_real_tool_registry,
     with_stable_defaults,
 )
 
@@ -229,3 +231,186 @@ def test_noop_navigation_reports_target_and_path_length():
     assert result.ok is True
     assert "path_length" in result.metrics
     assert "navigate_to_object" in result.observation.summary
+
+
+# ── Real tool registry wrapping Executor ──────────────────────────────────
+
+
+class FakeExecutor:
+    """Quacks like Executor: 4 navigation methods + path_length property.
+
+    Records calls for assertion and returns real TrajectoryEvidence so the
+    evidence->ToolResult conversion is exercised against the real dataclass.
+    """
+
+    def __init__(self, path_length: float = 1.25) -> None:
+        self.calls: list[tuple[str, tuple, dict]] = []
+        self._path_length = path_length
+
+    @property
+    def path_length(self) -> float:
+        return self._path_length
+
+    def _record(self, name: str, args: tuple, kwargs: dict) -> TrajectoryEvidence:
+        self.calls.append((name, args, kwargs))
+        return TrajectoryEvidence(
+            subgoal="fake-subgoal",
+            task_mode=name,
+            progress="reached",
+            salient=["red chair"],
+            outcome="object_found",
+            gd_quality="ok",
+            key_frames=["frame_000", "frame_007"],
+            current_image_b64=None,
+            room_id=3,
+            objects_nearby=["chair", "table"],
+        )
+
+    def explore_panorama(self, config=None) -> TrajectoryEvidence:
+        return self._record("explore_panorama", (), {"config": config})
+
+    def navigate_to_object(
+        self, object_name: str, view_idx=None
+    ) -> TrajectoryEvidence:
+        return self._record(
+            "navigate_to_object", (object_name,), {"view_idx": view_idx}
+        )
+
+    def explore_seed(self, seed_id: str) -> TrajectoryEvidence:
+        return self._record("explore_seed", (seed_id,), {})
+
+    def explore_frontier(self, frontier_id: str) -> TrajectoryEvidence:
+        return self._record("explore_frontier", (frontier_id,), {})
+
+
+def _evidence() -> TrajectoryEvidence:
+    return TrajectoryEvidence(
+        subgoal="s",
+        task_mode="navigate_to_object",
+        progress="p",
+        outcome="object_found",
+        gd_quality="ok",
+        key_frames=["k1"],
+        room_id=2,
+        objects_nearby=["o1"],
+    )
+
+
+def test_runtime_tools_wrap_executor_methods():
+    registry = build_real_tool_registry(FakeExecutor())
+    names = registry.names()
+    for required in (
+        "explore_panorama",
+        "navigate_to_object",
+        "explore_seed",
+        "explore_frontier",
+        "submit_answer",
+    ):
+        assert required in names
+    assert "fork_subagent" not in names
+    assert "pixel_navigate" not in names
+
+
+def test_real_registry_explore_panorama_dispatches_and_builds_result():
+    fake = FakeExecutor(path_length=2.5)
+    reg = build_real_tool_registry(fake)
+    call = ToolCall(call_id="p1", action_type="explore_panorama", arguments={})
+    result = reg.dispatch(call)
+    assert fake.calls == [("explore_panorama", (), {"config": None})]
+    assert result.ok is True
+    assert result.terminal is False
+    assert result.metrics["path_length"] == pytest.approx(2.5)
+    obs = result.observation
+    assert obs.summary  # non-empty
+    assert obs.image_ids == ["frame_000", "frame_007"]
+    assert obs.object_ids == ["chair", "table"]
+    assert obs.room_id == "3"
+    assert obs.pose == {}
+    assert obs.raw["outcome"] == "object_found"
+    assert obs.raw["gd_quality"] == "ok"
+    assert obs.raw["subgoal"] == "fake-subgoal"
+
+
+def test_real_registry_navigate_to_object_passes_args():
+    fake = FakeExecutor()
+    reg = build_real_tool_registry(fake)
+    call = ToolCall(
+        call_id="n1",
+        action_type="navigate_to_object",
+        arguments={"object_name": "chair", "view_idx": 4},
+    )
+    result = reg.dispatch(call)
+    assert result.ok is True
+    assert fake.calls == [("navigate_to_object", ("chair",), {"view_idx": 4})]
+    assert result.metrics["path_length"] == pytest.approx(1.25)
+
+
+def test_real_registry_explore_seed_passes_args():
+    fake = FakeExecutor()
+    reg = build_real_tool_registry(fake)
+    call = ToolCall(
+        call_id="s1",
+        action_type="explore_seed",
+        arguments={"seed_id": "seed_12"},
+    )
+    result = reg.dispatch(call)
+    assert result.ok is True
+    assert fake.calls == [("explore_seed", ("seed_12",), {})]
+
+
+def test_real_registry_explore_frontier_passes_args():
+    fake = FakeExecutor()
+    reg = build_real_tool_registry(fake)
+    call = ToolCall(
+        call_id="f1",
+        action_type="explore_frontier",
+        arguments={"frontier_id": "fr_9"},
+    )
+    result = reg.dispatch(call)
+    assert result.ok is True
+    assert fake.calls == [("explore_frontier", ("fr_9",), {})]
+
+
+def test_real_registry_executor_error_returns_structured_failure():
+    class BoomExecutor(FakeExecutor):
+        def navigate_to_object(self, object_name, view_idx=None):
+            raise RuntimeError("no path")
+
+    reg = build_real_tool_registry(BoomExecutor())
+    call = ToolCall(
+        call_id="e1",
+        action_type="navigate_to_object",
+        arguments={"object_name": "chair"},
+    )
+    result = reg.dispatch(call)
+    assert result.ok is False
+    assert result.terminal is False
+    assert "RuntimeError" in result.error
+    assert "no path" in result.error
+
+
+def test_real_registry_submit_answer_is_terminal_and_records():
+    reg = build_real_tool_registry(FakeExecutor())
+    call = ToolCall(
+        call_id="a1",
+        action_type="submit_answer",
+        arguments={"answer": "the red chair"},
+    )
+    result = reg.dispatch(call)
+    assert result.ok is True
+    assert result.terminal is True
+    assert "the red chair" in result.observation.summary
+
+
+def test_real_registry_room_id_none_when_unset():
+    class NoRoomExecutor(FakeExecutor):
+        def _record(self, name, args, kwargs):
+            ev = super()._record(name, args, kwargs)
+            ev.room_id = -1
+            return ev
+
+    reg = build_real_tool_registry(NoRoomExecutor())
+    call = ToolCall(call_id="p2", action_type="explore_panorama", arguments={})
+    result = reg.dispatch(call)
+    assert result.ok is True
+    assert result.observation.room_id is None

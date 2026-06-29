@@ -6,7 +6,7 @@ invoke in tests and replay.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import ClassVar
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from .contracts import Observation, ToolCall, ToolResult
 
@@ -151,3 +151,161 @@ _DEFAULT_NAVIGATION_ACTIONS = (
 def with_stable_defaults() -> ToolRegistry:
     """Backward-compatible alias for :meth:`ToolRegistry.with_stable_defaults`."""
     return ToolRegistry.with_stable_defaults()
+
+
+# ── Executor-backed production tools ───────────────────────────────────────
+
+
+@runtime_checkable
+class _ExecutorLike(Protocol):
+    """Structural type for objects that quack like ``Executor``.
+
+    Only the surface used by the production tool registry is required. The
+    real ``Executor`` (src/agent_executor.py) satisfies this; tests pass a
+    fake with the same methods. Intentionally not imported here to avoid a
+    habitat/TSDF dependency at module import time.
+    """
+
+    @property
+    def path_length(self) -> float: ...
+
+    def explore_panorama(self, config: Any = None) -> Any: ...
+
+    def navigate_to_object(
+        self, object_name: str, view_idx: Any = None
+    ) -> Any: ...
+
+    def explore_seed(self, seed_id: str) -> Any: ...
+
+    def explore_frontier(self, frontier_id: str) -> Any: ...
+
+
+def _evidence_to_observation(evidence: Any) -> Observation:
+    """Build a JSON-safe :class:`Observation` from a ``TrajectoryEvidence``.
+
+    ``pose`` is left empty: the runtime environment service (Task 3) tracks
+    pose out-of-band and threads it through ``EpisodeState``. Task 7 will
+    populate it here once the pose channel is wired through dispatch.
+    """
+    summary = getattr(evidence, "outcome", "") or getattr(evidence, "subgoal", "")
+    room_id = getattr(evidence, "room_id", -1)
+    return Observation(
+        summary=str(summary),
+        image_ids=list(getattr(evidence, "key_frames", []) or []),
+        object_ids=list(getattr(evidence, "objects_nearby", []) or []),
+        room_id=str(room_id) if room_id is not None and room_id >= 0 else None,
+        pose={},
+        raw={
+            "outcome": str(getattr(evidence, "outcome", "") or ""),
+            "gd_quality": str(getattr(evidence, "gd_quality", "") or ""),
+            "subgoal": str(getattr(evidence, "subgoal", "") or ""),
+        },
+    )
+
+
+def _evidence_to_result(
+    call: ToolCall, evidence: Any, path_length: float, terminal: bool = False
+) -> ToolResult:
+    return ToolResult(
+        call_id=call.call_id,
+        action_type=call.action_type,
+        ok=True,
+        terminal=terminal,
+        observation=_evidence_to_observation(evidence),
+        metrics={"path_length": float(path_length)},
+    )
+
+
+def _error_result(call: ToolCall, exc: BaseException) -> ToolResult:
+    return ToolResult(
+        call_id=call.call_id,
+        action_type=call.action_type,
+        ok=False,
+        terminal=False,
+        error=f"{type(exc).__name__}: {exc}",
+    )
+
+
+class _ExecutorNavigationTool(RuntimeTool):
+    """Base for executor-backed navigation tools.
+
+    Subclasses set ``name`` and implement :meth:`invoke` to call the
+    appropriate executor method and return its ``TrajectoryEvidence``.
+    """
+
+    name: ClassVar[str] = ""
+    terminal: ClassVar[bool] = False
+
+    def __init__(self, executor: _ExecutorLike) -> None:
+        self._executor = executor
+
+    @abstractmethod
+    def invoke(self, call: ToolCall) -> Any:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def run(self, call: ToolCall) -> ToolResult:
+        try:
+            evidence = self.invoke(call)
+        except Exception as exc:  # noqa: BLE001 - intentional wrap
+            return _error_result(call, exc)
+        return _evidence_to_result(
+            call, evidence, self._executor.path_length, terminal=self.terminal
+        )
+
+
+class ExplorePanoramaTool(_ExecutorNavigationTool):
+    name: ClassVar[str] = "explore_panorama"
+
+    def invoke(self, call: ToolCall) -> Any:
+        return self._executor.explore_panorama(
+            call.arguments.get("config", None)
+        )
+
+
+class NavigateToObjectTool(_ExecutorNavigationTool):
+    name: ClassVar[str] = "navigate_to_object"
+
+    def invoke(self, call: ToolCall) -> Any:
+        object_name = call.arguments.get("object_name")
+        if not isinstance(object_name, str) or not object_name:
+            raise ValueError("navigate_to_object requires 'object_name'")
+        view_idx = call.arguments.get("view_idx", None)
+        return self._executor.navigate_to_object(object_name, view_idx)
+
+
+class ExploreSeedTool(_ExecutorNavigationTool):
+    name: ClassVar[str] = "explore_seed"
+
+    def invoke(self, call: ToolCall) -> Any:
+        seed_id = call.arguments.get("seed_id")
+        if not isinstance(seed_id, str) or not seed_id:
+            raise ValueError("explore_seed requires 'seed_id'")
+        return self._executor.explore_seed(seed_id)
+
+
+class ExploreFrontierTool(_ExecutorNavigationTool):
+    name: ClassVar[str] = "explore_frontier"
+
+    def invoke(self, call: ToolCall) -> Any:
+        frontier_id = call.arguments.get("frontier_id")
+        if not isinstance(frontier_id, str) or not frontier_id:
+            raise ValueError("explore_frontier requires 'frontier_id'")
+        return self._executor.explore_frontier(frontier_id)
+
+
+def build_real_tool_registry(executor: _ExecutorLike) -> ToolRegistry:
+    """Return a production :class:`ToolRegistry` backed by ``executor``.
+
+    Wraps the four ``Executor`` navigation methods and reuses
+    :class:`SubmitAnswerTool` (terminal, executor-independent). Does not
+    register ``fork_subagent`` or ``pixel_navigate``. Navigation tool errors
+    are caught and surfaced as ``ToolResult(ok=False)``; ``submit_answer``
+    keeps its existing validation behavior.
+    """
+    registry = ToolRegistry()
+    registry.register(ExplorePanoramaTool(executor))
+    registry.register(NavigateToObjectTool(executor))
+    registry.register(ExploreSeedTool(executor))
+    registry.register(ExploreFrontierTool(executor))
+    registry.register(SubmitAnswerTool())
+    return registry
