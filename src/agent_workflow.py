@@ -245,9 +245,15 @@ def call_vlm(
         if proxy_https:
             proxies["https"] = proxy_https
 
+    # Normalize base_url: OpenAI-compatible endpoints need /chat/completions.
+    # Allow the caller to pass either the full URL or a short base.
+    _post_url = base_url
+    if not _post_url.endswith("/chat/completions"):
+        _post_url = _post_url.rstrip("/") + "/chat/completions"
+
     try:
         resp = requests.post(
-            base_url, json=payload, headers=headers,
+            _post_url, json=payload, headers=headers,
             timeout=180, proxies=proxies)
     except requests.exceptions.Timeout:
         logger.error("VLM API timeout")
