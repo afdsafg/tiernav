@@ -456,25 +456,15 @@ def _run_goatbench_runtime(
     tsdf_bnds,
     floor_height,
 ):
-    """Runtime engine: GOATBenchAdapter session threading -> RuntimeEntrypoint.
-
-    Uses the GOATBench adapter's ``start_episode`` / ``run_subtask`` session
-    API so all subtasks share the same episode-level ``episode_id`` (no
-    per-subtask composite).  Downstream memory services see the same session
-    across subtasks, fulfilling the GOATBench SUBTASK_SEQUENCE requirement.
-
-    Task 9 wires habitat-backed tools for full execution; for now the
-    entrypoint uses stable default tools and a fake planner.
-    """
+    """Runtime engine: GOATBenchAdapter session threading with real services."""
     from src.tiernav_runtime.adapters import GOATBenchTaskAdapter
-    from src.tiernav_runtime.contracts import (
-        RunSpec,
-        BenchmarkRule,
-        MemoryScope,
-    )
-    from src.tiernav_runtime.entrypoint import RuntimeEntrypoint, episode_result_to_legacy_dict
+    from src.tiernav_runtime.contracts import BenchmarkRule, MemoryScope, RunSpec
+    from src.tiernav_runtime.planner import PlannerClient
+    from src.tiernav_runtime.env import RuntimeEnvironmentService
     from src.tiernav_runtime.memory import MemorySession
-    from src.tiernav_runtime.success import SuccessEvaluator
+    from src.tiernav_runtime.entrypoint import RuntimeEntrypoint
+    from src.agent_executor import Executor
+    from src.utils import calc_agent_subtask_distance
 
     output_dir = str(cfg.output_dir)
 
@@ -484,19 +474,47 @@ def _run_goatbench_runtime(
         model_env="QWEN_PLANNER_MODEL",
     )
 
-    adapter = GOATBenchTaskAdapter()
-    adapter.start_episode(episode_id, scene_id=scene_id, output_dir=output_dir)
+    # --- Build real VLM planner ---
+    planner = PlannerClient(provider_config)
 
-    _fake_planner = type(
-        "FakePlanner",
-        (),
-        {
-            "decide": lambda self, prompt: PlannerDecision(
-                action_type="submit_answer", arguments={}
-            )
-        },
-    )()
+    # --- Build real Executor ---
+    executor = Executor(
+        scene=scene,
+        tsdf_planner=tsdf_planner,
+        memory_store=scene,
+        cfg=cfg,
+        detection_model=models["detection"],
+        sam_predictor=models["sam"],
+        clip_model=models["clip"],
+        clip_preprocess=models["clip_preprocess"],
+        clip_tokenizer=models["clip_tokenizer"],
+    )
 
+    # --- Build environment service (GOATBench: long-lived across subtasks) ---
+    env_service = RuntimeEnvironmentService.for_goatbench(
+        scene=scene,
+        tsdf_planner=tsdf_planner,
+        executor=executor,
+        detection_model=models["detection"],
+        sam_predictor=models["sam"],
+        clip_model=models["clip"],
+        clip_preprocess=models["clip_preprocess"],
+        clip_tokenizer=models["clip_tokenizer"],
+    )
+
+    # --- GOATBench rule: 1m success distance, explicit stop required ---
+    rule = BenchmarkRule(
+        success_distance_m=1.0,
+        requires_explicit_stop=True,
+        memory_scope=MemoryScope.SUBTASK_SEQUENCE,
+        scoring_mode="distance",
+    )
+
+    # --- MemorySession: one per episode, reused across subtasks ---
+    memory_session = MemorySession(scope=MemoryScope.SUBTASK_SEQUENCE)
+    memory_session.start_session(episode_id=episode_id)
+
+    # --- RunSpec ---
     spec = RunSpec(
         run_id=f"{scene_id}_{episode_id}",
         task_name="goatbench",
@@ -508,23 +526,78 @@ def _run_goatbench_runtime(
         max_steps=num_step,
     )
 
-    entrypoint = RuntimeEntrypoint.with_fake_services(_fake_planner)
+    # --- Build entrypoint with ALL real services ---
+    entrypoint = RuntimeEntrypoint.with_real_services(
+        planner=planner,
+        environment=env_service,
+        rule=rule,
+        executor=executor,
+        memory_scope_adapter=memory_session,
+    )
+
+    # --- Adapter for episode-level session ---
+    adapter = GOATBenchTaskAdapter()
+    adapter.start_episode(episode_id, scene_id=scene_id, output_dir=output_dir)
+
+    results = []
 
     for subtask_idx, (goal_type, subtask_goal) in enumerate(
         zip(all_subtask_goal_types, all_subtask_goals)
     ):
         goal_description = (
-            subtask_goal.get("description", str(subtask_goal))
-            if isinstance(subtask_goal, dict)
+            subtask_goal[0].get("object_category", str(subtask_goal))
+            if subtask_goal and isinstance(subtask_goal[0], dict)
             else str(subtask_goal)
         )
+
+        # --- Extract goal pose for distance measurement ---
+        goal_positions = []
+        if subtask_goal and isinstance(subtask_goal[0], dict):
+            for goal_obj in subtask_goal:
+                if "view_points" in goal_obj and goal_obj["view_points"]:
+                    goal_positions.append(
+                        goal_obj["view_points"][0]["agent_state"]["position"]
+                    )
+                elif "position" in goal_obj:
+                    goal_positions.append(goal_obj["position"])
+
+        if goal_positions:
+            gp = goal_positions[0]
+            env_service.set_goal_pose({
+                "x": float(gp[0]),
+                "y": float(gp[2]),
+            })
+
+        # --- Pose threading: each subtask starts from previous end pose ---
+        current_pose = env_service.current_pose if env_service.current_pose else {
+            "x": float(pts[0]), "y": float(pts[1]), "theta": float(angle)
+        }
+
         request = adapter.run_subtask(
             subtask_index=subtask_idx,
             goal_type=goal_type,
             goal_description=goal_description,
-            initial_pose={"x": float(pts[0]), "y": float(pts[1]), "theta": float(angle)},
+            initial_pose=current_pose,
         )
-        _ = entrypoint.run(spec, request)
+
+        result = entrypoint.run(spec, request)
+
+        # --- Post-subtask: compute geodesic distance ---
+        subtask_viewpoints = []
+        if subtask_goal:
+            for goal_obj in subtask_goal:
+                if hasattr(goal_obj, "get") and goal_obj.get("view_points"):
+                    for vp in goal_obj["view_points"]:
+                        subtask_viewpoints.append(
+                            vp["agent_state"]["position"]
+                        )
+        if subtask_viewpoints and hasattr(executor, "_pts") and executor._pts is not None:
+            final_dist = calc_agent_subtask_distance(
+                executor._pts, subtask_viewpoints, scene.pathfinder
+            )
+            result.distance_to_goal = float(final_dist)
+
+        results.append(result)
 
     return global_step
 
