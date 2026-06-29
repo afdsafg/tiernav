@@ -153,3 +153,40 @@ def test_runner_uses_provider_config_for_planner(runner_file):
         f"{runner_file}: ProviderConfig must reference QWEN_PLANNER_BASE_URL env var"
     assert "QWEN_PLANNER_MODEL" in text, \
         f"{runner_file}: ProviderConfig must reference QWEN_PLANNER_MODEL env var"
+
+
+# ── Task 10: archive backstop audits ────────────────────────────────────
+# After archiving src/two_tier_graph/ and src/goatbench_graph/ into
+# archive/legacy_runtime/, confirm no supported path re-imports them.
+
+
+GLOB_IMPORT_PATTERN = re.compile(
+    r'(?:from|import)\s+archive\.legacy_runtime'
+)
+
+
+def test_default_runners_do_not_import_archived_legacy_runtime():
+    """AEQA and GOATBench runners must not import from archive/legacy_runtime/."""
+    for runner_file in RUNNER_FILES:
+        text = _read_runner_text(runner_file)
+        assert not GLOB_IMPORT_PATTERN.search(text), \
+            f"{runner_file}: must not import from archive.legacy_runtime/"
+
+
+def _iter_tiernav_runtime_sources():
+    """Yield (relative_path, text) for every .py file in src/tiernav_runtime/."""
+    runtime_dir = os.path.join(_CMA_DIR, "src", "tiernav_runtime")
+    for dirpath, _, filenames in os.walk(runtime_dir):
+        for fn in filenames:
+            if fn.endswith(".py"):
+                full = os.path.join(dirpath, fn)
+                rel = os.path.relpath(full, _CMA_DIR)
+                with open(full, "r") as f:
+                    yield rel, f.read()
+
+
+def test_tiernav_runtime_does_not_import_legacy_graph_code():
+    """No file under src/tiernav_runtime/ may import archived legacy modules."""
+    for rel_path, text in _iter_tiernav_runtime_sources():
+        assert not GLOB_IMPORT_PATTERN.search(text), \
+            f"{rel_path}: tiernav_runtime must not import archive.legacy_runtime/*"
