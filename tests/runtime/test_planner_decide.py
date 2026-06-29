@@ -68,3 +68,37 @@ class TestPlannerClientDecide:
 
         assert decision.action_type == "submit_answer"
         assert decision.confidence == 0.0
+
+    def test_decide_handles_vlm_call_failure(self):
+        """decide() falls back on VLM transport failure."""
+        cfg = ProviderConfig(
+            api_key_env="TEST_KEY", base_url_env="TEST_BASE_URL", model_env="TEST_MODEL",
+        )
+        client = PlannerClient(cfg, api_key="sk-test", base_url="http://test", model="test-model")
+
+        with patch(
+            "src.tiernav_runtime.planner._call_vlm",
+            side_effect=RuntimeError("network error"),
+        ):
+            decision = client.decide("Test prompt")
+
+        assert decision.action_type == "submit_answer"
+        assert decision.confidence == 0.0
+        assert "planner_call_failed" in decision.arguments.get("failure_reason", "")
+
+    def test_decide_handles_non_dict_response(self):
+        """decide() falls back when VLM returns a JSON list or string."""
+        cfg = ProviderConfig(
+            api_key_env="TEST_KEY", base_url_env="TEST_BASE_URL", model_env="TEST_MODEL",
+        )
+        client = PlannerClient(cfg, api_key="sk-test", base_url="http://test", model="test-model")
+
+        with patch(
+            "src.tiernav_runtime.planner._call_vlm",
+            return_value='["not", "a", "dict"]',
+        ):
+            decision = client.decide("Test prompt")
+
+        assert decision.action_type == "submit_answer"
+        assert decision.confidence == 0.0
+        assert "planner_response_not_dict" in decision.arguments.get("failure_reason", "")
