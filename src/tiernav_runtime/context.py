@@ -148,7 +148,7 @@ class ContextCompiler:
             "Pick frontier_id / seed_id / object_name from the available_targets section below. Do NOT invent ids.",
             "Strategy: explore_panorama to observe -> explore_frontier/explore_seed to move -> navigate_to_object once target visible -> submit_answer when done.",
             'Example: {"action_type": "explore_panorama", "reason": "Need to observe surroundings", "expected": "Get room layout"}',
-            'Example: {"action_type": "explore_frontier", "reason": "Explore unexplored region", "expected": "Find target", "frontier_id": "0"}',
+            'For target tools, copy the exact frontier_id, seed_id, or object_name from available_targets.',
             'Example: {"action_type": "submit_answer", "reason": "Final answer", "expected": "Done", "answer": "<your answer here>"}',
         ]
         return "\n".join(lines)

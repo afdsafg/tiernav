@@ -98,6 +98,19 @@ def test_action_schema_section_content_is_raw_string():
     assert action.content != '"schema"'
 
 
+def test_task_instruction_does_not_contain_fake_target_ids():
+    """Static examples must not provide IDs that are absent from available_targets."""
+    state = _base_state()
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema=SCHEMA)
+    task = {s.name: s for s in sections}["task_instruction"]
+
+    assert '"frontier_id": "0"' not in task.content
+    assert '"seed_id": "0"' not in task.content
+    assert '"object_name": "chair"' not in task.content
+
+
 def test_same_input_gives_stable_content_hash():
     state = _state_with_memory()
     compiler = ContextCompiler()

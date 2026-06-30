@@ -213,12 +213,21 @@ def _evidence_to_observation(evidence: Any) -> Observation:
 def _evidence_to_result(
     call: ToolCall, evidence: Any, path_length: float, terminal: bool = False
 ) -> ToolResult:
+    observation = _evidence_to_observation(evidence)
+    outcome = observation.raw.get("outcome", "")
+    failed_outcomes = {"target_not_reached", "detection_failed", "error"}
+    ok = outcome not in failed_outcomes
+    error = ""
+    if not ok:
+        progress = observation.raw.get("progress", "")
+        error = outcome if not progress else f"{outcome}: {progress}"
     return ToolResult(
         call_id=call.call_id,
         action_type=call.action_type,
-        ok=True,
+        ok=ok,
         terminal=terminal,
-        observation=_evidence_to_observation(evidence),
+        observation=observation,
+        error=error,
         metrics={"path_length": float(path_length)},
     )
 

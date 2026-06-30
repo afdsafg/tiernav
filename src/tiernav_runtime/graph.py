@@ -172,7 +172,7 @@ def compile_context_node(
         env=services.environment,
     )
     episode.context_sections = sections
-    episode.prompt = services.context.render_prompt(sections)
+    rendered_prompt = services.context.render_prompt(sections)
     _emit(services, episode.episode_id, "context_compiled", {
         "sections": [s.model_dump(mode="json") for s in sections],
         "memory_query_used": episode.memory_pack is not None,
@@ -183,7 +183,7 @@ def compile_context_node(
         })
     return {
         "state": episode.model_dump(mode="json"),
-        "prompt": episode.prompt,
+        "prompt": rendered_prompt,
     }
 
 
@@ -192,14 +192,15 @@ def plan_node(
 ) -> RuntimeGraphState:
     services = _services(config)
     episode = EpisodeState.model_validate(graph_state["state"])
+    prompt = graph_state.get("prompt", episode.prompt)
 
     _emit(services, episode.episode_id, "planner_called", {
-        "prompt": episode.prompt,
+        "prompt": prompt,
         "round_index": episode.round_index + 1,
     })
     rule = getattr(services, "rule", None)
     retries = getattr(rule, "planner_retries", 0) if rule is not None else 0
-    raw = services.planner.decide(episode.prompt, retries=retries)
+    raw = services.planner.decide(prompt, retries=retries)
     decision = (
         raw
         if isinstance(raw, PlannerDecision)

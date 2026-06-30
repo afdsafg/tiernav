@@ -50,8 +50,10 @@ class FakePlanner:
             raise ValueError("script must be non-empty")
         self._script = list(script)
         self._i = 0
+        self.prompts: list[str] = []
 
     def decide(self, prompt: str, **kwargs) -> PlannerDecision:
+        self.prompts.append(prompt)
         decision = self._script[min(self._i, len(self._script) - 1)]
         self._i += 1
         return decision
@@ -174,18 +176,44 @@ def test_round_budget_fallback():
 
 
 def test_context_sections_written_and_prompt_nonempty():
+    task_prompt = "where is the mug?"
     planner = FakePlanner(
         [PlannerDecision(action_type="submit_answer", arguments={"answer": "sofa"})]
     )
-    final_state = _run(_services(planner), _spec(), _request())
+    final_state = _run(_services(planner), _spec(), _request(prompt=task_prompt))
     state = final_state["state"]
 
     assert state["context_sections"], "context_sections must be populated"
     names = [s["name"] for s in state["context_sections"]]
     assert "task_instruction" in names
     assert "action_schema" in names
-    assert state["prompt"], "prompt must be non-empty"
-    assert final_state["prompt"] == state["prompt"]
+    assert state["prompt"] == task_prompt
+    assert final_state["prompt"], "rendered graph prompt must be non-empty"
+    assert "## task_instruction" in final_state["prompt"]
+    assert final_state["prompt"] != state["prompt"]
+
+
+def test_task_prompt_does_not_recursively_embed_rendered_context():
+    """EpisodeState.prompt must stay as the task text across planner rounds."""
+    task_prompt = "where is the mug?"
+    planner = FakePlanner(
+        [
+            PlannerDecision(action_type="explore_panorama"),
+            PlannerDecision(
+                action_type="submit_answer",
+                arguments={"answer": "mug"},
+            ),
+        ]
+    )
+    final_state = _run(_services(planner), _spec(), _request(prompt=task_prompt))
+    state = final_state["state"]
+
+    assert len(planner.prompts) >= 2
+    second_round_prompt = planner.prompts[1]
+    assert second_round_prompt.count("## task_instruction") == 1
+    assert f"prompt: {task_prompt}" in second_round_prompt
+    assert state["prompt"] == task_prompt
+    assert final_state["prompt"] == second_round_prompt
 
 
 def test_memory_pack_present_when_active_memory_query_true():

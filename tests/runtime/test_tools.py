@@ -375,6 +375,35 @@ def test_real_registry_explore_frontier_passes_args():
     assert fake.calls == [("explore_frontier", ("fr_9",), {})]
 
 
+def test_real_registry_marks_failed_executor_outcome_as_not_ok():
+    class FailedFrontierExecutor(FakeExecutor):
+        def explore_frontier(self, frontier_id: str) -> TrajectoryEvidence:
+            self.calls.append(("explore_frontier", (frontier_id,), {}))
+            return TrajectoryEvidence(
+                subgoal=f"Navigate to frontier {frontier_id}",
+                task_mode="explore_frontier",
+                progress=f"Frontier {frontier_id} not found",
+                outcome="target_not_reached",
+                gd_quality="no_detection",
+            )
+
+    fake = FailedFrontierExecutor()
+    reg = build_real_tool_registry(fake)
+    call = ToolCall(
+        call_id="f_missing",
+        action_type="explore_frontier",
+        arguments={"frontier_id": "0"},
+    )
+    result = reg.dispatch(call)
+
+    assert fake.calls == [("explore_frontier", ("0",), {})]
+    assert result.ok is False
+    assert result.terminal is False
+    assert "target_not_reached" in result.error
+    assert "Frontier 0 not found" in result.error
+    assert result.observation.raw["outcome"] == "target_not_reached"
+
+
 def test_real_registry_executor_error_returns_structured_failure():
     class BoomExecutor(FakeExecutor):
         def navigate_to_object(self, object_name, view_idx=None):

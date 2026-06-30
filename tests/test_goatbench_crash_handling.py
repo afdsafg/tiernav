@@ -119,3 +119,30 @@ def test_corrupted_scenes_helpers_exist():
             found.add(node.name)
     missing = expected_helpers - found
     assert not missing, f"Missing helper functions: {missing}"
+
+
+def test_goatbench_scene_graph_optional_semantics_default_to_none():
+    """Runtime perception may call GOATBench update_scene_graph without GT semantics."""
+    source_path = os.path.join(
+        os.path.dirname(__file__), "..", "src", "scene_goatbench.py"
+    )
+    with open(source_path) as f:
+        tree = ast.parse(f.read())
+
+    method = _find_method(tree, "Scene", "update_scene_graph")
+    assert method is not None, "Scene.update_scene_graph not found"
+
+    args = method.args.args
+    defaults = method.args.defaults
+    default_by_arg = {
+        arg.arg: default for arg, default in zip(args[-len(defaults) :], defaults)
+    }
+
+    for arg_name in ("semantic_obs", "gt_target_obj_ids"):
+        default = default_by_arg.get(arg_name)
+        assert isinstance(default, ast.Constant), (
+            f"{arg_name} must default to None, got {ast.dump(default)}"
+        )
+        assert default.value is None, (
+            f"{arg_name} must default to None, got {ast.dump(default)}"
+        )

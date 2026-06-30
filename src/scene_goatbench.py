@@ -133,7 +133,7 @@ class Scene:
         # set agent
         self.agent = self.simulator.initialize_agent(sim_settings["default_agent"])
 
-        self.cam_intrinsic = get_cam_intr(cfg.img_width, cfg.img_height, cfg.hfov)
+        self.cam_intrinsic = get_cam_intr(cfg.hfov, cfg.img_height, cfg.img_width)
 
         # about scene graph
         self.objects: MapObjectDict[int, Dict] = (
@@ -308,8 +308,8 @@ class Scene:
         pts_voxel,
         img_path,
         frame_idx,
-        semantic_obs=Optional[np.ndarray],
-        gt_target_obj_ids=Optional[List[int]],
+        semantic_obs: Optional[np.ndarray] = None,
+        gt_target_obj_ids: Optional[List[int]] = None,
         target_obj_mask=None,  # ignored; for AEQA scene interface compat
     ) -> Tuple[np.ndarray, List[int], Dict[int, int]]:
         # return annotated image; the detected object ids in current frame; the object id of the target object (if detected)
