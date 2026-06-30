@@ -139,7 +139,13 @@ class RuntimeEntrypoint:
                 "spec": spec.model_dump(mode="json"),
                 "request": request.model_dump(mode="json"),
             },
-            config={"configurable": {"services": self.services}},
+            config={
+                "configurable": {"services": self.services},
+                # Each round traverses ~4 nodes (compile_context, plan, policy,
+                # execute_tool). Default LangGraph recursion_limit=25 caps at
+                # ~6 rounds; scale to spec.max_rounds * 8 + 10 headroom.
+                "recursion_limit": max(25, int(spec.max_rounds) * 8 + 10),
+            },
         )
         state = EpisodeState.model_validate(final["state"])
 
