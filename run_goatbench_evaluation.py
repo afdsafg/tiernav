@@ -523,8 +523,8 @@ def _run_goatbench_runtime(
         output_dir=output_dir,
         planner_provider=provider_config.resolve_base_url(),
         planner_model=provider_config.resolve_model(),
-        max_rounds=cfg.get("max_planner_rounds", 20),
-        max_steps=num_step,
+        max_rounds=cfg.get("max_planner_rounds", 200),
+        max_steps=50,
     )
 
     # --- Build entrypoint with ALL real services ---
