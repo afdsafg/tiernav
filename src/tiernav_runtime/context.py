@@ -192,11 +192,14 @@ class ContextCompiler:
 
         # Frontiers — unexplored boundary regions the agent can navigate to.
         tsdf = getattr(env, "tsdf_planner", None)
-        if tsdf is not None:
-            frontiers = getattr(tsdf, "frontiers", None) or []
-            if frontiers:
-                ids = [str(getattr(f, "frontier_id", "?")) for f in frontiers[:20]]
-                lines.append("frontiers: " + ", ".join(ids))
+        frontiers = getattr(tsdf, "frontiers", None) if tsdf is not None else None
+        import sys as _sys
+        scene = getattr(env, "scene", None)
+        _objs = getattr(scene, "objects", None) if scene is not None else None
+        print(f"[DIAG _render_available_targets] tsdf={tsdf is not None} frontiers_n={len(frontiers) if frontiers else 0} scene={scene is not None} objects_n={len(_objs) if _objs else 0}", file=_sys.stderr)
+        if tsdf is not None and frontiers:
+            ids = [str(getattr(f, "frontier_id", "?")) for f in frontiers[:20]]
+            lines.append("frontiers: " + ", ".join(ids))
 
         # Seeds — room-entry points registered by SeedViewManager.
         seeds = getattr(tsdf, "seeds", None) if tsdf is not None else None
@@ -206,9 +209,8 @@ class ContextCompiler:
             lines.append("seeds: " + ", ".join(seed_ids))
 
         # Nearby objects — from scene.objects, limited to class names.
-        scene = getattr(env, "scene", None)
         if scene is not None:
-            objects = getattr(scene, "objects", None) or {}
+            objects = _objs or {}
             if objects:
                 names = []
                 for obj in list(objects.values())[:30]:
