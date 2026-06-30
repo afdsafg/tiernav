@@ -257,9 +257,12 @@ def execute_tool_node(
     if executor is not None and hasattr(executor, "_pts") and executor._pts is not None:
         pts = executor._pts
         angle = getattr(executor, "_angle", 0.0) or 0.0
+        # Habitat pts is 3D [x, y, z] where y is up; preserve all 3 so the
+        # pose dict round-trips through _reset_session with correct dimensionality.
         env._current_pose = {
-            "x": float(pts[0]),
-            "y": float(pts[1]),
+            "x": float(pts[0]) if len(pts) > 0 else 0.0,
+            "y": float(pts[1]) if len(pts) > 1 else 0.0,
+            "z": float(pts[2]) if len(pts) > 2 else 0.0,
             "theta": float(angle),
         }
         env._path_length = float(getattr(executor, "_path_length", 0.0) or 0.0)

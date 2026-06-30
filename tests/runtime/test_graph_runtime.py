@@ -579,8 +579,8 @@ def test_goatbench_distance_exceeded_is_failure():
     """GOATBench: distance above threshold → failure."""
     evaluator = _goat_evaluator(distance_m=1.0)
     env = _fake_env_with_distance(
-        current_pose={"x": 0.0, "y": 0.0, "theta": 0.0},
-        goal_pose={"x": 3.0, "y": 4.0, "theta": 0.0},
+        current_pose={"x": 0.0, "y": 0.0, "z": 0.0, "theta": 0.0},
+        goal_pose={"x": 3.0, "y": 0.0, "z": 4.0, "theta": 0.0},
     )
     # distance = sqrt(3^2 + 4^2) = 5.0 > 1.0 → failure.
     planner = FakePlanner(
@@ -605,9 +605,10 @@ def test_goatbench_distance_exceeded_is_failure():
 def test_execute_tool_node_computes_distance_from_env_when_available():
     """execute_tool_node updates distance_to_goal from env after each tool."""
     evaluator = _goat_evaluator(distance_m=2.0)
+    # Habitat coords: y is up; floor-plane distance uses x, z.
     env = _fake_env_with_distance(
-        current_pose={"x": 1.0, "y": 1.0, "theta": 0.0},
-        goal_pose={"x": 4.0, "y": 5.0, "theta": 0.0},
+        current_pose={"x": 1.0, "y": 1.0, "z": 1.0, "theta": 0.0},
+        goal_pose={"x": 4.0, "y": 1.0, "z": 5.0, "theta": 0.0},
     )
     # distance = sqrt((4-1)^2 + (5-1)^2) = sqrt(9+16) = 5.0
     planner = FakePlanner(

@@ -93,8 +93,9 @@ class RuntimeEnvironmentService:
         self._goal_pose = dict(pose) if pose is not None else None
 
     def distance_to_goal(self) -> Optional[float]:
-        """Euclidean distance (XY) from current_pose to goal_pose.
-        
+        """Euclidean floor-plane distance from current_pose to goal_pose.
+
+        Habitat coords are [x, y, z] with y up; the floor plane is x, z.
         Returns None when either pose is missing, so the evaluator can
         distinguish "no measurement" from "far from goal".
         """
@@ -103,8 +104,8 @@ class RuntimeEnvironmentService:
         if self._goal_pose is None:
             return None
         dx = self._current_pose.get("x", 0.0) - self._goal_pose.get("x", 0.0)
-        dy = self._current_pose.get("y", 0.0) - self._goal_pose.get("y", 0.0)
-        return (dx * dx + dy * dy) ** 0.5
+        dz = self._current_pose.get("z", 0.0) - self._goal_pose.get("z", 0.0)
+        return (dx * dx + dz * dz) ** 0.5
 
     @property
     def is_torn_down(self) -> bool:
@@ -199,7 +200,13 @@ class RuntimeEnvironmentService:
         self._current_pose = dict(initial_pose)
         self._path_length = 0.0
         if self.executor is not None and hasattr(self.executor, "set_state"):
-            pts = [initial_pose.get("x", 0.0), initial_pose.get("y", 0.0)]
+            # Habitat uses 3D pts [x, y, z] where y is up. The pose dict
+            # carries x, z (floor plane) and optional y (floor height).
+            # Fall back to 0.0 for y when unset (legacy 2D pose).
+            x = initial_pose.get("x", 0.0)
+            y = initial_pose.get("y", 0.0)
+            z = initial_pose.get("z", 0.0)
+            pts = [x, y, z]
             angle = initial_pose.get("theta", 0.0)
             try:
                 self.executor.set_state(pts, angle, 0)

@@ -594,7 +594,7 @@ def _run_goatbench_runtime(
     adapter.start_episode(str(episode_id), scene_id=scene_id, output_dir=output_dir)
 
     env_service.start_session(episode_id=str(episode_id), initial_pose={
-        "x": float(pts[0]), "y": float(pts[1]), "theta": float(angle)
+        "x": float(pts[0]), "y": float(pts[1]), "z": float(pts[2]), "theta": float(angle)
     })
 
     results = []
@@ -622,14 +622,15 @@ def _run_goatbench_runtime(
 
             if goal_positions:
                 gp = goal_positions[0]
+                # Habitat goal is [x, y, z] with y up; floor-plane goal is x, z.
                 env_service.set_goal_pose({
                     "x": float(gp[0]),
-                    "y": float(gp[2]),
+                    "z": float(gp[2]),
                 })
 
             # --- Pose threading: each subtask starts from previous end pose ---
             current_pose = env_service.current_pose if env_service.current_pose else {
-                "x": float(pts[0]), "y": float(pts[1]), "theta": float(angle)
+                "x": float(pts[0]), "y": float(pts[1]), "z": float(pts[2]), "theta": float(angle)
             }
 
             request = adapter.run_subtask(
