@@ -668,8 +668,14 @@ def main(cfg, start_ratio=0.0, end_ratio=1.0, split=1):
     sam_predictor = SAM(cfg.sam_model_name)  # UltraLytics SAM
     logging.info(f"Load SAM model {cfg.sam_model_name} successful!")
 
+    # Prefer local CLIP cache to avoid HuggingFace network timeouts.
+    import os as _os
+    _local_clip = _os.path.expanduser("~/.cache/clip/ViT-B-32.pt")
+    _clip_pretrained = _local_clip if _os.path.exists(_local_clip) else "laion2b_s34b_b79k"
+    if _os.path.exists(_local_clip):
+        logging.info(f"Load CLIP weights from local cache: {_local_clip}")
     clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
-        "ViT-B-32", "laion2b_s34b_b79k"  # "ViT-H-14", "laion2b_s32b_b79k"
+        "ViT-B-32", _clip_pretrained
     )
     clip_tokenizer = open_clip.get_tokenizer("ViT-B-32")
     logging.info(f"Load CLIP model successful!")
