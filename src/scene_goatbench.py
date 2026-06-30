@@ -310,6 +310,7 @@ class Scene:
         frame_idx,
         semantic_obs=Optional[np.ndarray],
         gt_target_obj_ids=Optional[List[int]],
+        target_obj_mask=None,  # ignored; for AEQA scene interface compat
     ) -> Tuple[np.ndarray, List[int], Dict[int, int]]:
         # return annotated image; the detected object ids in current frame; the object id of the target object (if detected)
         assert not (
