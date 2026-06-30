@@ -219,12 +219,14 @@ def _evidence_to_result(
 
 
 def _error_result(call: ToolCall, exc: BaseException) -> ToolResult:
+    import traceback
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     return ToolResult(
         call_id=call.call_id,
         action_type=call.action_type,
         ok=False,
         terminal=False,
-        error=f"{type(exc).__name__}: {exc}",
+        error=f"{type(exc).__name__}: {exc}\n{tb}",
     )
 
 
