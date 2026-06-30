@@ -138,6 +138,12 @@ class ContextCompiler:
             f"task_name: {state.task_name}",
             f"task_mode: {state.task_mode.value}",
             f"prompt: {state.prompt}",
+            "",
+            "You are a navigation planner. Output ONLY a JSON object on a single line, no markdown fences, no prose.",
+            "Required fields: action_type (one of the available tools), reason (string), expected (string).",
+            "Optional fields: object_name (str), seed_id (str), frontier_id (str), view_idx (int), answer (str, required for submit_answer).",
+            'Example: {"action_type": "explore_panorama", "reason": "Need to observe surroundings", "expected": "Get room layout"}',
+            'Example: {"action_type": "submit_answer", "reason": "Final answer", "expected": "Done", "answer": "<your answer here>"}',
         ]
         return "\n".join(lines)
 
