@@ -176,12 +176,22 @@ class RuntimeEntrypoint:
             answer=state.answer,
             steps_taken=state.step_index,
             rounds_used=state.round_index,
-            path_length=float(state.step_index),
+            path_length=self._resolve_path_length(state),
             failure_type=state.failure_type,
             event_log_path=str(event_log_path),
             distance_to_goal=state.distance_to_goal,
             submit_was_explicit=state.submitted_explicitly,
         )
+
+    def _resolve_path_length(self, state: EpisodeState) -> float:
+        """Prefer the environment service's real path_length; fall back to 0.0."""
+        env = self.services.environment
+        if env is not None and hasattr(env, "path_length"):
+            try:
+                return float(env.path_length)
+            except (TypeError, ValueError):
+                pass
+        return 0.0
 
 
 def episode_result_to_legacy_dict(
