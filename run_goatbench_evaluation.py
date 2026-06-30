@@ -611,10 +611,20 @@ def _run_goatbench_runtime(
                                 vp["agent_state"]["position"]
                             )
             if subtask_viewpoints and hasattr(executor, "_pts") and executor._pts is not None:
-                final_dist = calc_agent_subtask_distance(
-                    executor._pts, subtask_viewpoints, scene.pathfinder
+                import numpy as _np
+                # habitat_sim.ShortestPath.requested_start requires a 3D float32
+                # array. Executor._pts is 2D [x, y]; pad with floor_height as z.
+                pts_3d = _np.array(
+                    [float(executor._pts[0]), float(executor._pts[1]), float(floor_height)],
+                    dtype=_np.float32,
                 )
-                result.distance_to_goal = float(final_dist)
+                try:
+                    final_dist = calc_agent_subtask_distance(
+                        pts_3d, subtask_viewpoints, scene.pathfinder
+                    )
+                    result.distance_to_goal = float(final_dist)
+                except Exception as dist_e:
+                    logging.warning("Distance computation failed: %s", dist_e)
 
             results.append(result)
             global_step += 1
