@@ -538,9 +538,9 @@ def _run_goatbench_runtime(
 
     # --- Adapter for episode-level session ---
     adapter = GOATBenchTaskAdapter()
-    adapter.start_episode(episode_id, scene_id=scene_id, output_dir=output_dir)
+    adapter.start_episode(str(episode_id), scene_id=scene_id, output_dir=output_dir)
 
-    env_service.start_session(episode_id=episode_id, initial_pose={
+    env_service.start_session(episode_id=str(episode_id), initial_pose={
         "x": float(pts[0]), "y": float(pts[1]), "theta": float(angle)
     })
 
