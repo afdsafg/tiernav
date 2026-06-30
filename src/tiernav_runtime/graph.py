@@ -273,6 +273,7 @@ def execute_tool_node(
     _emit(services, episode.episode_id, "tool_result", {
         "observation": result.observation.model_dump(mode="json"),
         "ok": result.ok, "terminal": result.terminal,
+        "error": result.error,
         "step_index": episode.step_index,
     })
     _emit(services, episode.episode_id, "memory_updated", {
