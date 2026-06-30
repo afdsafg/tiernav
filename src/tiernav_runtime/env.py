@@ -197,16 +197,17 @@ class RuntimeEnvironmentService:
         self._episode_id = episode_id
 
     def _reset_session(self, initial_pose: dict[str, float]) -> None:
+        import numpy as np
+
         self._current_pose = dict(initial_pose)
         self._path_length = 0.0
         if self.executor is not None and hasattr(self.executor, "set_state"):
-            # Habitat uses 3D pts [x, y, z] where y is up. The pose dict
-            # carries x, z (floor plane) and optional y (floor height).
-            # Fall back to 0.0 for y when unset (legacy 2D pose).
+            # Habitat uses 3D pts [x, y, z] where y is up. numpy array so
+            # downstream code can do pts[[0, 2]] fancy indexing.
             x = initial_pose.get("x", 0.0)
             y = initial_pose.get("y", 0.0)
             z = initial_pose.get("z", 0.0)
-            pts = [x, y, z]
+            pts = np.array([x, y, z], dtype=np.float32)
             angle = initial_pose.get("theta", 0.0)
             try:
                 self.executor.set_state(pts, angle, 0)
