@@ -434,6 +434,56 @@ def _load_corrupted_scenes(output_dir: str) -> set:
     return set()
 
 
+def _feed_result_to_logger(
+    *, logger, result, executor, scene, tsdf_planner,
+    subtask_id, goal_type, subtask_goal, floor_height,
+):
+    """Translate a runtime EpisodeResult into legacy Logger calls.
+
+    Mirrors the legacy path: init_subtask (for gt distance + metadata),
+    log_step (path), log_subtask_result (verdict + SPL + snapshots).
+    """
+    import numpy as np
+
+    pts = executor._pts if hasattr(executor, "_pts") and executor._pts is not None else np.array([0.0, 0.0])
+    pts_3d = np.array([float(pts[0]), float(pts[1]), float(floor_height)], dtype=np.float32)
+
+    subtask_metadata = logger.init_subtask(
+        subtask_id, goal_type, subtask_goal, pts_3d, scene, tsdf_planner,
+    )
+
+    # Seed the logger's traversed-distance accumulator with the real
+    # executor path_length so SPL (computed in log_subtask_result as
+    # success * gt_dist / max(gt_dist, subtask_explore_dist)) reflects
+    # path efficiency rather than collapsing to the raw success rate.
+    logger.subtask_explore_dist = float(getattr(result, "path_length", 0.0) or 0.0)
+
+    success_by_distance = bool(
+        result.success
+        and result.submit_was_explicit
+        and (result.distance_to_goal or 0.0) <= 1.0
+    )
+    # success_by_snapshot: legacy heuristic — target object observed in a snapshot.
+    # Runtime doesn't track object-id matches yet (Task E adds target_observed).
+    # Default to success_by_distance until then.
+    success_by_snapshot = success_by_distance
+
+    n_filtered = 0
+    n_total = len(getattr(scene, "snapshots", {}) or {})
+    n_frames = len(getattr(scene, "frames", []) or [])
+
+    logger.log_subtask_result(
+        success_by_snapshot=success_by_snapshot,
+        success_by_distance=success_by_distance,
+        subtask_id=subtask_id,
+        gt_subtask_explore_dist=subtask_metadata["gt_subtask_explore_dist"],
+        goal_type=goal_type,
+        n_filtered_snapshots=n_filtered,
+        n_total_snapshots=n_total,
+        n_total_frames=n_frames,
+    )
+
+
 def _run_goatbench_runtime(
     scene,
     tsdf_planner,
@@ -628,6 +678,17 @@ def _run_goatbench_runtime(
 
             results.append(result)
             global_step += 1
+
+            try:
+                _feed_result_to_logger(
+                    logger=logger, result=result, executor=executor,
+                    scene=scene, tsdf_planner=tsdf_planner,
+                    subtask_id=f"{episode_id}_{subtask_idx}",
+                    goal_type=goal_type, subtask_goal=subtask_goal,
+                    floor_height=floor_height,
+                )
+            except Exception as log_e:
+                logging.warning("Logger feed failed for subtask %d: %s", subtask_idx, log_e)
 
     finally:
         env_service.teardown_session()
