@@ -21,6 +21,9 @@ class RuntimeTool(ABC):
 
     name: ClassVar[str] = ""
     terminal: ClassVar[bool] = False
+    # Human-readable description of required/optional arguments, used by
+    # action_schema_text so the planner VLM knows what fields to emit.
+    arg_schema: ClassVar[str] = ""
 
     @abstractmethod
     def run(self, call: ToolCall) -> ToolResult:  # pragma: no cover - abstract
@@ -32,6 +35,7 @@ class SubmitAnswerTool(RuntimeTool):
 
     name: ClassVar[str] = "submit_answer"
     terminal: ClassVar[bool] = True
+    arg_schema: ClassVar[str] = "required: answer (str)"
 
     def run(self, call: ToolCall) -> ToolResult:
         answer = str(call.arguments.get("answer", "") or "")
@@ -115,10 +119,11 @@ class ToolRegistry:
             )
 
     def action_schema_text(self) -> str:
-        lines = ["Available tools:"]
+        lines = ["Available tools (arguments go in the JSON 'arguments' object):"]
         for name in self.names():
             tool = self._tools[name]
-            lines.append(f"- {name}: terminal={tool.terminal}")
+            args = tool.arg_schema or "none"
+            lines.append(f"- {name}: {args} [terminal={tool.terminal}]")
         return "\n".join(lines)
 
     @classmethod
@@ -259,6 +264,7 @@ class _ExecutorNavigationTool(RuntimeTool):
 
 class ExplorePanoramaTool(_ExecutorNavigationTool):
     name: ClassVar[str] = "explore_panorama"
+    arg_schema: ClassVar[str] = "no arguments (observe 8-view panorama in place)"
 
     def invoke(self, call: ToolCall) -> Any:
         return self._executor.explore_panorama(
@@ -268,6 +274,7 @@ class ExplorePanoramaTool(_ExecutorNavigationTool):
 
 class NavigateToObjectTool(_ExecutorNavigationTool):
     name: ClassVar[str] = "navigate_to_object"
+    arg_schema: ClassVar[str] = "required: object_name (str). optional: view_idx (int)"
 
     def invoke(self, call: ToolCall) -> Any:
         object_name = call.arguments.get("object_name")
@@ -279,6 +286,7 @@ class NavigateToObjectTool(_ExecutorNavigationTool):
 
 class ExploreSeedTool(_ExecutorNavigationTool):
     name: ClassVar[str] = "explore_seed"
+    arg_schema: ClassVar[str] = "required: seed_id (str) — pick from available_targets"
 
     def invoke(self, call: ToolCall) -> Any:
         seed_id = call.arguments.get("seed_id")
@@ -289,6 +297,7 @@ class ExploreSeedTool(_ExecutorNavigationTool):
 
 class ExploreFrontierTool(_ExecutorNavigationTool):
     name: ClassVar[str] = "explore_frontier"
+    arg_schema: ClassVar[str] = "required: frontier_id (str) — pick from available_targets"
 
     def invoke(self, call: ToolCall) -> Any:
         frontier_id = call.arguments.get("frontier_id")

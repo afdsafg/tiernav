@@ -95,6 +95,7 @@ class ContextCompiler:
         action_schema: str,
         include_memory: bool = True,
         policy_hint: str = "",
+        env: Any = None,
     ) -> list[ContextSection]:
         if not isinstance(action_schema, str):
             raise TypeError(
@@ -110,6 +111,7 @@ class ContextCompiler:
         memory_text = self._render_memory(state, include_memory)
         recent_trace = self._render_recent_trace(state)
         observation_text = self._render_observation(state)
+        targets_text = self._render_available_targets(env)
         policy_text = policy_hint
 
         return [
@@ -118,6 +120,7 @@ class ContextCompiler:
             _section("memory_index", memory_text, cacheable=True),
             _section("recent_trace", recent_trace, cacheable=False),
             _section("current_observation", observation_text, cacheable=False),
+            _section("available_targets", targets_text, cacheable=False),
             _section("policy_hint", policy_text, cacheable=False),
         ]
 
@@ -142,7 +145,10 @@ class ContextCompiler:
             "You are a navigation planner. Output ONLY a JSON object on a single line, no markdown fences, no prose.",
             "Required fields: action_type (one of the available tools), reason (string), expected (string).",
             "Optional fields: object_name (str), seed_id (str), frontier_id (str), view_idx (int), answer (str, required for submit_answer).",
+            "Pick frontier_id / seed_id / object_name from the available_targets section below. Do NOT invent ids.",
+            "Strategy: explore_panorama to observe -> explore_frontier/explore_seed to move -> navigate_to_object once target visible -> submit_answer when done.",
             'Example: {"action_type": "explore_panorama", "reason": "Need to observe surroundings", "expected": "Get room layout"}',
+            'Example: {"action_type": "explore_frontier", "reason": "Explore unexplored region", "expected": "Find target", "frontier_id": "0"}',
             'Example: {"action_type": "submit_answer", "reason": "Final answer", "expected": "Done", "answer": "<your answer here>"}',
         ]
         return "\n".join(lines)
@@ -162,4 +168,53 @@ class ContextCompiler:
 
     @staticmethod
     def _render_observation(state: EpisodeState) -> str:
-        return state.last_observation.summary
+        obs = state.last_observation
+        parts: list[str] = []
+        if obs.summary:
+            parts.append(obs.summary)
+        if obs.object_ids:
+            parts.append("objects_nearby: " + ", ".join(obs.object_ids))
+        if obs.room_id is not None:
+            parts.append(f"room_id: {obs.room_id}")
+        return "\n".join(parts)
+
+    @staticmethod
+    def _render_available_targets(env: Any) -> str:
+        """List frontiers/seeds/objects the planner can target this round.
+
+        Reads from the RuntimeEnvironmentService's tsdf_planner and scene.
+        Returns "" when env is None or has no targets, so the section is
+        skipped by render_prompt.
+        """
+        if env is None:
+            return ""
+        lines: list[str] = []
+
+        # Frontiers — unexplored boundary regions the agent can navigate to.
+        tsdf = getattr(env, "tsdf_planner", None)
+        if tsdf is not None:
+            frontiers = getattr(tsdf, "frontiers", None) or []
+            if frontiers:
+                ids = [str(getattr(f, "frontier_id", "?")) for f in frontiers[:20]]
+                lines.append("frontiers: " + ", ".join(ids))
+
+        # Seeds — room-entry points registered by SeedViewManager.
+        seeds = getattr(tsdf, "seeds", None) if tsdf is not None else None
+        if seeds:
+            seed_ids = [str(getattr(s, "seed_id", s) if not isinstance(s, str) else s)
+                        for s in list(seeds)[:20]]
+            lines.append("seeds: " + ", ".join(seed_ids))
+
+        # Nearby objects — from scene.objects, limited to class names.
+        scene = getattr(env, "scene", None)
+        if scene is not None:
+            objects = getattr(scene, "objects", None) or {}
+            if objects:
+                names = []
+                for obj in list(objects.values())[:30]:
+                    if isinstance(obj, dict) and "class_name" in obj:
+                        names.append(str(obj["class_name"]))
+                if names:
+                    lines.append("objects: " + ", ".join(sorted(set(names))))
+
+        return "\n".join(lines)

@@ -169,6 +169,7 @@ def compile_context_node(
         episode,
         action_schema=services.tools.action_schema_text(),
         include_memory=spec.ablation.spatial_memory,
+        env=services.environment,
     )
     episode.context_sections = sections
     episode.prompt = services.context.render_prompt(sections)

@@ -57,6 +57,7 @@ def test_sections_ordered_cacheable_first():
         "memory_index",
         "recent_trace",
         "current_observation",
+        "available_targets",
         "policy_hint",
     ]
     assert names == expected_order
