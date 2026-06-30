@@ -200,6 +200,28 @@ def replay_events(path: str | Path) -> EpisodeState:
                     state.round_index = payload.round_index
                 if payload.step_index is not None:
                     state.step_index = payload.step_index
+            elif event.event_type in {
+                "subtask_started", "context_compiled", "planner_called",
+                "planner_decision", "tool_called", "tool_result",
+                "memory_query", "memory_updated", "success_evaluated",
+            }:
+                # Informational events from the production runtime. Apply the
+                # ones that carry replayable state; accept the rest as
+                # forward-compatible no-ops so replay doesn't crash on
+                # production logs.
+                if event.event_type == "tool_result":
+                    payload = ToolResultReceivedPayload.model_validate(event.payload)
+                    state.last_observation = payload.observation
+                    if payload.step_index is not None:
+                        state.step_index = payload.step_index
+                elif event.event_type == "planner_decision":
+                    from .contracts import PlannerDecision
+                    state.current_decision = PlannerDecision.model_validate(
+                        {k: v for k, v in event.payload.items()
+                         if k in {"action_type", "reasoning", "expected",
+                                  "confidence", "arguments"}}
+                    )
+                # other event types: no state change
             else:
                 raise ValueError(f"unsupported event_type: {event.event_type}")
 

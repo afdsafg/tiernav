@@ -124,6 +124,8 @@ class RuntimeEntrypoint:
                 f"at {event_log_path}; refusing to overwrite append-only log"
             )
         recorder = EpisodeRecorder(event_log_path)
+        self.services.recorder = recorder
+        self.services.event_seq[0] = 2
 
         recorder.append(
             make_event(
@@ -134,37 +136,42 @@ class RuntimeEntrypoint:
             )
         )
 
-        final = self.graph.invoke(
-            {
-                "spec": spec.model_dump(mode="json"),
-                "request": request.model_dump(mode="json"),
-            },
-            config={
-                "configurable": {"services": self.services},
-                # Each round traverses ~4 nodes (compile_context, plan, policy,
-                # execute_tool). Default LangGraph recursion_limit=25 caps at
-                # ~6 rounds; scale to spec.max_rounds * 8 + 10 headroom.
-                "recursion_limit": max(25, int(spec.max_rounds) * 8 + 10),
-            },
-        )
-        state = EpisodeState.model_validate(final["state"])
-
-        # EpisodeEndedPayload (replay.py) is extra=forbid and accepts exactly
-        # success/answer/round_index/step_index, so the payload must carry only
-        # those keys for the log to remain replayable.
-        recorder.append(
-            make_event(
-                episode_id=request.episode_id,
-                event_type="episode_ended",
-                sequence=2,
-                payload={
-                    "success": state.success,
-                    "answer": state.answer,
-                    "round_index": state.round_index,
-                    "step_index": state.step_index,
+        try:
+            final = self.graph.invoke(
+                {
+                    "spec": spec.model_dump(mode="json"),
+                    "request": request.model_dump(mode="json"),
+                },
+                config={
+                    "configurable": {"services": self.services},
+                    # Each round traverses ~4 nodes (compile_context, plan, policy,
+                    # execute_tool). Default LangGraph recursion_limit=25 caps at
+                    # ~6 rounds; scale to spec.max_rounds * 8 + 10 headroom.
+                    "recursion_limit": max(25, int(spec.max_rounds) * 8 + 10),
                 },
             )
-        )
+            state = EpisodeState.model_validate(final["state"])
+
+            # EpisodeEndedPayload (replay.py) is extra=forbid and accepts exactly
+            # success/answer/round_index/step_index, so the payload must carry only
+            # those keys for the log to remain replayable.
+            recorder.append(
+                make_event(
+                    episode_id=request.episode_id,
+                    event_type="episode_ended",
+                    sequence=self.services.event_seq[0] + 1,
+                    payload={
+                        "success": state.success,
+                        "answer": state.answer,
+                        "round_index": state.round_index,
+                        "step_index": state.step_index,
+                    },
+                )
+            )
+        finally:
+            # Clear recorder so the services object is reusable across episodes
+            # even when graph.invoke raises (partial log left to caller).
+            self.services.recorder = None
 
         return EpisodeResult(
             schema_version=state.schema_version,

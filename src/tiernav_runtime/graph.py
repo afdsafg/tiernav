@@ -32,8 +32,10 @@ from .contracts import (
     ToolCall,
     ToolResult,
 )
+from .events import make_event
 from .memory import MemoryService, MemorySession
 from .policy import PolicyDecision, WorkflowPolicy
+from .recorder import EpisodeRecorder
 from .success import SuccessEvaluator
 from .tools import ToolRegistry
 
@@ -82,10 +84,39 @@ class RuntimeServices:
     # Task 7: wire success evaluation through the graph. When None, the graph
     # falls back to legacy AEQA logic (answer non-empty = success).
     success_evaluator: SuccessEvaluator | None = None
+    # EpisodeRecorder wired by the entrypoint so graph nodes can append
+    # design-spec events. None on the fake/dev path and between episodes.
+    recorder: EpisodeRecorder | None = None
+    # ponytail: `subtask_started` (design-spec event 11) is GOATBench-only and
+    # emitted by the runner at subtask boundaries, not by a graph node — the
+    # graph has no subtask concept. Add a runner-side emit if GOATBench needs
+    # it in the event log.
+    # Monotonic intra-episode event sequence counter. episode_started=1 is
+    # appended by the entrypoint; _emit increments before appending, so the
+    # first intra-episode event gets sequence 3 (2 is the pre-increment seed).
+    # Boxed in a list so the dataclass default stays mutable-safe.
+    event_seq: list[int] = None  # set in __post_init__
 
     def __post_init__(self) -> None:
         if self.context is None:
             self.context = ContextCompiler()
+        if self.event_seq is None:
+            self.event_seq = [2]
+
+
+def _emit(
+    services: "RuntimeServices",
+    episode_id: str,
+    event_type: str,
+    payload: dict | None = None,
+) -> None:
+    """Append a design-spec event if a recorder is wired."""
+    if services.recorder is None:
+        return
+    services.event_seq[0] += 1
+    services.recorder.append(
+        make_event(episode_id, event_type, services.event_seq[0], payload or {})
+    )
 
 
 def _services(config: RunnableConfig) -> RuntimeServices:
@@ -138,6 +169,14 @@ def compile_context_node(
     )
     episode.context_sections = sections
     episode.prompt = services.context.render_prompt(sections)
+    _emit(services, episode.episode_id, "context_compiled", {
+        "sections": [s.model_dump(mode="json") for s in sections],
+        "memory_query_used": episode.memory_pack is not None,
+    })
+    if episode.memory_pack is not None:
+        _emit(services, episode.episode_id, "memory_query", {
+            "summary": episode.memory_pack.summary,
+        })
     return {
         "state": episode.model_dump(mode="json"),
         "prompt": episode.prompt,
@@ -150,6 +189,10 @@ def plan_node(
     services = _services(config)
     episode = EpisodeState.model_validate(graph_state["state"])
 
+    _emit(services, episode.episode_id, "planner_called", {
+        "prompt": episode.prompt,
+        "round_index": episode.round_index + 1,
+    })
     raw = services.planner.decide(episode.prompt)
     decision = (
         raw
@@ -158,6 +201,12 @@ def plan_node(
     )
     episode.current_decision = decision
     episode.round_index += 1
+    _emit(services, episode.episode_id, "planner_decision", {
+        "action_type": decision.action_type,
+        "reasoning": decision.reasoning,
+        "arguments": decision.arguments,
+        "round_index": episode.round_index,
+    })
     return {"state": episode.model_dump(mode="json")}
 
 
@@ -190,6 +239,10 @@ def execute_tool_node(
         action_type=decision.action_type,
         arguments=dict(decision.arguments),
     )
+    _emit(services, episode.episode_id, "tool_called", {
+        "call_id": call.call_id, "action_type": call.action_type,
+        "arguments": call.arguments, "step_index": episode.step_index,
+    })
     result: ToolResult = services.tools.dispatch(call)
 
     # Sync executor pose back to the environment service so distance-to-goal
@@ -212,6 +265,15 @@ def execute_tool_node(
         action_type=result.action_type,
         round_index=episode.round_index,
     )
+    _emit(services, episode.episode_id, "tool_result", {
+        "observation": result.observation.model_dump(mode="json"),
+        "ok": result.ok, "terminal": result.terminal,
+        "step_index": episode.step_index,
+    })
+    _emit(services, episode.episode_id, "memory_updated", {
+        "action_type": result.action_type,
+        "round_index": episode.round_index,
+    })
 
     if result.terminal:
         episode.terminal = True
@@ -310,6 +372,12 @@ def finalize_node(
         episode.success = verdict.success
         episode.failure_type = episode.failure_type or verdict.reason
         episode.submitted_explicitly = submitted_explicitly
+        _emit(services, episode.episode_id, "success_evaluated", {
+            "success": episode.success, "answer": episode.answer,
+            "submitted_explicitly": submitted_explicitly,
+            "distance_to_goal": episode.distance_to_goal,
+            "failure_type": episode.failure_type,
+        })
         return {"state": episode.model_dump(mode="json")}
 
     # --- Legacy AEQA path (fake services, no evaluator) ---
@@ -318,6 +386,12 @@ def finalize_node(
     episode.terminal = True
     episode.success = bool(answer)
     episode.answer = answer
+    _emit(services, episode.episode_id, "success_evaluated", {
+        "success": episode.success, "answer": episode.answer,
+        "submitted_explicitly": False,
+        "distance_to_goal": episode.distance_to_goal,
+        "failure_type": episode.failure_type,
+    })
     return {"state": episode.model_dump(mode="json")}
 
 

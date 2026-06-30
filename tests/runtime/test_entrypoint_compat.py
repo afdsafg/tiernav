@@ -164,16 +164,19 @@ def test_event_log_has_started_and_ended_with_sequences_1_and_2(tmp_path):
     with open(result.event_log_path, "r", encoding="utf-8") as fh:
         lines = [json.loads(line) for line in fh if line.strip()]
 
-    assert len(lines) == 2
+    # episode_started is always first (sequence=1); episode_ended is always
+    # last with the highest sequence. Intra-episode events (context_compiled,
+    # planner_called, planner_decision, success_evaluated) sit between them,
+    # so episode_ended's sequence is no longer hard-coded to 2.
     assert lines[0]["event_type"] == "episode_started"
     assert lines[0]["sequence"] == 1
-    assert lines[1]["event_type"] == "episode_ended"
-    assert lines[1]["sequence"] == 2
+    assert lines[-1]["event_type"] == "episode_ended"
+    assert lines[-1]["sequence"] == max(line["sequence"] for line in lines)
     # episode_started payload carries the request.
     assert "request" in lines[0]["payload"]
     assert lines[0]["payload"]["request"]["episode_id"] == "ep-chair"
     # episode_ended payload carries the required terminal fields.
-    ended_payload = lines[1]["payload"]
+    ended_payload = lines[-1]["payload"]
     for key in ("success", "answer", "round_index", "step_index"):
         assert key in ended_payload, f"episode_ended payload missing {key}"
 
@@ -200,10 +203,13 @@ def test_second_run_same_episode_id_raises_FileExistsError(tmp_path):
     with pytest.raises(FileExistsError):
         entrypoint.run(spec, request)
 
-    # Old event log is untouched: still 2 lines, still replays to terminal.
+    # Old event log is untouched: still starts with episode_started, ends
+    # with episode_ended, and replays to terminal. The line count is no
+    # longer fixed at 2 now that intra-episode events are emitted.
     with open(first.event_log_path, "r", encoding="utf-8") as fh:
         lines = [json.loads(line) for line in fh if line.strip()]
-    assert len(lines) == 2
+    assert lines[0]["event_type"] == "episode_started"
+    assert lines[-1]["event_type"] == "episode_ended"
 
     state = replay_events(first.event_log_path)
     assert state.terminal is True
