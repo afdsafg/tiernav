@@ -256,6 +256,9 @@ class EpisodeResult(RuntimeModel):
     # can enforce GOATBench's explicit-stop requirement.
     distance_to_goal: Optional[NonNegativeFloat] = None
     submit_was_explicit: bool = False
+    # GOATBench: was the target object observed in a snapshot? None when
+    # unchecked; the runner sets it from executor last-observation.
+    target_observed: Optional[bool] = None
 
 
 PublicModel = Literal[

@@ -463,10 +463,13 @@ def _feed_result_to_logger(
         and result.submit_was_explicit
         and (result.distance_to_goal or 0.0) <= 1.0
     )
-    # success_by_snapshot: legacy heuristic — target object observed in a snapshot.
-    # Runtime doesn't track object-id matches yet (Task E adds target_observed).
-    # Default to success_by_distance until then.
-    success_by_snapshot = success_by_distance
+    # success_by_snapshot: target object category observed near agent's final
+    # position. target_observed is set by the runner via executor._collect_nearby;
+    # fall back to success_by_distance when unchecked (None).
+    success_by_snapshot = (
+        result.target_observed if result.target_observed is not None
+        else success_by_distance
+    )
 
     n_filtered = 0
     n_total = len(getattr(scene, "snapshots", {}) or {})
@@ -675,6 +678,21 @@ def _run_goatbench_runtime(
                     result.distance_to_goal = float(final_dist)
                 except Exception as dist_e:
                     logging.warning("Distance computation failed: %s", dist_e)
+
+            # Check if target object category appears among objects near the
+            # agent's final position. Executor._collect_nearby returns
+            # class_name strings; goal subtask_goal carries object_category.
+            try:
+                goal_cats = {
+                    g.get("object_category")
+                    for g in subtask_goal
+                    if isinstance(g, dict) and g.get("object_category")
+                }
+                if goal_cats and hasattr(executor, "_collect_nearby") and executor._pts is not None:
+                    seen = set(executor._collect_nearby(executor._pts) or [])
+                    result.target_observed = bool(goal_cats & seen)
+            except Exception:
+                pass
 
             results.append(result)
             global_step += 1
