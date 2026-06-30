@@ -592,7 +592,7 @@ def _run_goatbench_runtime(
                 logging.exception("Subtask %d failed: %s", subtask_idx, e)
                 from src.tiernav_runtime.contracts import EpisodeResult, TaskMode
                 result = EpisodeResult(
-                    episode_id=episode_id,
+                    episode_id=str(episode_id),
                     scene_id=scene_id,
                     task_name="goatbench",
                     task_mode=TaskMode.GOAL_NAVIGATION,
