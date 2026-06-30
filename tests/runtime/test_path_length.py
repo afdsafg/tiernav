@@ -43,7 +43,7 @@ def test_path_length_uses_env_service_path_length(tmp_path):
 
     # Mock planner to submit immediately
     from src.tiernav_runtime.contracts import PlannerDecision
-    planner.decide = lambda prompt: PlannerDecision(
+    planner.decide = lambda prompt, **kw: PlannerDecision(
         action_type="submit_answer", arguments={"answer": "yes"}, reasoning="done",
     )
 

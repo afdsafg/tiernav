@@ -102,6 +102,7 @@ class RuntimeEntrypoint:
             environment=environment,
             memory_session=memory_scope_adapter,
             success_evaluator=SuccessEvaluator(rule),
+            rule=rule,
         )
         return cls(services)
 

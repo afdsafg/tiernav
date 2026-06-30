@@ -107,7 +107,7 @@ class PlannerClient:
             model_name=self.resolve_model(),
         )
 
-    def decide(self, prompt: str) -> PlannerDecision:
+    def decide(self, prompt: str, *, retries: int = 0) -> PlannerDecision:
         """Call the VLM with the compiled prompt and return a PlannerDecision.
 
         Builds a single user message from ``prompt``, calls the
@@ -115,49 +115,55 @@ class PlannerClient:
         through ``planner_action_to_decision`` for legacy PlannerAction
         compatibility.
 
-        On JSON parse errors or missing ``action_type``, returns a terminal
-        ``submit_answer`` with confidence 0.0 to avoid infinite loops on
-        unparseable planner output.
+        On JSON parse errors or missing ``action_type``, retries up to
+        ``retries`` times before returning a terminal ``submit_answer``
+        with confidence 0.0 to avoid infinite loops on unparseable planner
+        output. ``retries=0`` (default) preserves the original fail-fast
+        behavior.
         """
         import json as _json
 
         messages = [{"role": "user", "content": prompt}]
-        try:
-            raw = self.call_vlm(messages)
-        except Exception:
-            return PlannerDecision(
-                action_type="submit_answer",
-                reasoning="planner_call_failed",
-                confidence=0.0,
-                arguments={"failure_reason": "planner_call_failed"},
+        last_error_decision: PlannerDecision | None = None
+
+        for attempt in range(retries + 1):
+            try:
+                raw = self.call_vlm(messages)
+            except Exception:
+                last_error_decision = PlannerDecision(
+                    action_type="submit_answer",
+                    reasoning="planner_call_failed",
+                    confidence=0.0,
+                    arguments={"failure_reason": "planner_call_failed",
+                               "attempt": attempt + 1},
+                )
+                continue
+
+            try:
+                parsed = _json.loads(raw.strip())
+            except _json.JSONDecodeError:
+                last_error_decision = PlannerDecision(
+                    action_type="submit_answer",
+                    reasoning="planner_parse_error",
+                    confidence=0.0,
+                    arguments={"failure_reason": "planner_parse_error",
+                               "raw": raw[:500], "attempt": attempt + 1},
+                )
+                continue
+
+            if not isinstance(parsed, dict) or not parsed.get("action_type"):
+                reason = ("planner_response_not_dict" if not isinstance(parsed, dict)
+                          else "planner_missing_action_type")
+                last_error_decision = PlannerDecision(
+                    action_type="submit_answer",
+                    reasoning=reason,
+                    confidence=0.0,
+                    arguments={"failure_reason": reason, "attempt": attempt + 1},
+                )
+                continue
+
+            return planner_action_to_decision(
+                type("PlannerAction", (), parsed)()
             )
 
-        try:
-            parsed = _json.loads(raw.strip())
-        except _json.JSONDecodeError:
-            return PlannerDecision(
-                action_type="submit_answer",
-                reasoning="planner_parse_error",
-                confidence=0.0,
-                arguments={"failure_reason": "planner_parse_error", "raw": raw[:500]},
-            )
-
-        if not isinstance(parsed, dict):
-            return PlannerDecision(
-                action_type="submit_answer",
-                reasoning="planner_response_not_dict",
-                confidence=0.0,
-                arguments={"failure_reason": "planner_response_not_dict"},
-            )
-
-        if not parsed.get("action_type"):
-            return PlannerDecision(
-                action_type="submit_answer",
-                reasoning="planner_missing_action_type",
-                confidence=0.0,
-                arguments={"failure_reason": "planner_missing_action_type"},
-            )
-
-        return planner_action_to_decision(
-            type("PlannerAction", (), parsed)()
-        )
+        return last_error_decision  # type: ignore[return-value]

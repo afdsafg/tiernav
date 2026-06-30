@@ -51,7 +51,7 @@ class FakePlanner:
         self._script = list(script)
         self._i = 0
 
-    def decide(self, prompt: str) -> PlannerDecision:
+    def decide(self, prompt: str, **kwargs) -> PlannerDecision:
         decision = self._script[min(self._i, len(self._script) - 1)]
         self._i += 1
         return decision

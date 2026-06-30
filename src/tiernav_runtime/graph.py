@@ -84,6 +84,9 @@ class RuntimeServices:
     # Task 7: wire success evaluation through the graph. When None, the graph
     # falls back to legacy AEQA logic (answer non-empty = success).
     success_evaluator: SuccessEvaluator | None = None
+    # Active BenchmarkRule, set by with_real_services, read by plan_node
+    # for planner_retries. None for fake-services path.
+    rule: Any = None
     # EpisodeRecorder wired by the entrypoint so graph nodes can append
     # design-spec events. None on the fake/dev path and between episodes.
     recorder: EpisodeRecorder | None = None
@@ -193,7 +196,9 @@ def plan_node(
         "prompt": episode.prompt,
         "round_index": episode.round_index + 1,
     })
-    raw = services.planner.decide(episode.prompt)
+    rule = getattr(services, "rule", None)
+    retries = getattr(rule, "planner_retries", 0) if rule is not None else 0
+    raw = services.planner.decide(episode.prompt, retries=retries)
     decision = (
         raw
         if isinstance(raw, PlannerDecision)

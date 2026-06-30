@@ -30,7 +30,7 @@ def test_emits_planner_and_tool_events(tmp_path):
             action_type="submit_answer", arguments={"answer": "yes"}, reasoning="r",
         ),
     ])
-    planner.decide = lambda prompt: next(decisions)
+    planner.decide = lambda prompt, **kw: next(decisions)
 
     env = RuntimeEnvironmentService.for_aeqa(
         scene=None, tsdf_planner=None, executor=MagicMock(),

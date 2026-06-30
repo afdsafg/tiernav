@@ -90,6 +90,9 @@ class BenchmarkRule(RuntimeModel):
     requires_explicit_stop: bool = False
     memory_scope: MemoryScope
     scoring_mode: str
+    # Bounded planner retry count on parse/call failures. 0 = no retry
+    # (immediate fallback submit). Default 0 preserves current behavior.
+    planner_retries: NonNegativeInt = 0
 
 
 class RunSpec(RuntimeModel):
