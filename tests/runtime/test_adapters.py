@@ -291,9 +291,10 @@ def test_goatbench_adapter_threads_subtask_context_and_goal_metadata():
         initial_pose={"x": 1.0, "y": 2.0, "z": 0.0},
     )
 
-    # Both subtasks share the episode-level id — no per-subtask composite.
-    assert req0.episode_id == "ep-42"
-    assert req1.episode_id == "ep-42"
+    # Each subtask gets a unique episode_id (per-subtask event log) while
+    # sharing the session-level episode_id for memory continuity.
+    assert req0.episode_id == "ep-42_0"
+    assert req1.episode_id == "ep-42_1"
     assert req0.scene_id == "scene-9"
     assert req1.scene_id == "scene-9"
     assert req0.task_mode == TaskMode.GOAL_NAVIGATION

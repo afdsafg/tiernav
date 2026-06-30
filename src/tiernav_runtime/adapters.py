@@ -94,7 +94,13 @@ class GOATBenchTaskAdapter:
         *,
         initial_pose: dict[str, float] | None = None,
     ) -> EpisodeRequest:
-        """Produce an EpisodeRequest sharing the episode-level id.
+        """Produce an EpisodeRequest with a per-subtask unique episode_id.
+
+        The runtime entrypoint writes an event log per episode_id and refuses
+        to overwrite an existing one. GOATBench subtasks share memory and
+        pose but each needs its own event log, so the request episode_id is
+        ``{episode_id}_{subtask_index}``. The session-level episode_id (used
+        for MemorySession continuity) stays unchanged.
 
         Raises RuntimeError if ``start_episode`` has not been called.
         """
@@ -103,7 +109,7 @@ class GOATBenchTaskAdapter:
                 "GOATBenchTaskAdapter.start_episode must be called before run_subtask"
             )
         return EpisodeRequest(
-            episode_id=self._episode_id,
+            episode_id=f"{self._episode_id}_{subtask_index}",
             scene_id=self._scene_id,
             task_name=self.task_name,
             task_mode=TaskMode.GOAL_NAVIGATION,
