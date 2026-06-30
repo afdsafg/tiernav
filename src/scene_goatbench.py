@@ -956,3 +956,11 @@ class Scene:
             logging.info(f"{snapshot_id}:")
             for obj_str in obj_list:
                 logging.info(f"\t{obj_str}")
+
+    def add_snapshot(self, **kwargs):
+        """No-op stub for AEQA memory_store interface compat.
+
+        GOATBench uses Logger for snapshot tracking, not the scene object.
+        agent_tools.observe_panorama calls this unconditionally.
+        """
+        pass
