@@ -151,6 +151,33 @@ def test_build_answer_messages_include_snapshot_image():
     assert any("Snapshot 0" in block.get("text", "") for block in messages[1]["content"])
 
 
+def test_build_answer_messages_include_egocentric_image_when_snapshots_absent():
+    state = AEQAVisualState(
+        question="What is hanging on the oven handle?",
+        snapshots=[],
+        frontiers=[],
+        egocentric_views=[
+            AEQAImage(
+                image_id="current_view",
+                image_b64="current-b64",
+                label="Current egocentric view",
+                source="egocentric",
+            )
+        ],
+    )
+
+    messages = build_answer_messages(state)
+    content = messages[1]["content"]
+
+    assert any("Current / Egocentric Views" in block.get("text", "") for block in content)
+    assert any("Current egocentric view" in block.get("text", "") for block in content)
+    assert any(
+        block.get("image_url", {}).get("url", "").endswith(",current-b64")
+        for block in content
+        if block.get("type") == "image_url"
+    )
+
+
 def test_build_explore_messages_include_frontier_image():
     state = AEQAVisualState(
         question="What is hanging on the oven handle?",
@@ -165,6 +192,65 @@ def test_build_explore_messages_include_frontier_image():
     assert "PHYSICALLY NAVIGATE" in messages[0]["content"]
     assert any(block.get("type") == "image_url" for block in messages[1]["content"])
     assert any("Frontier 4" in block.get("text", "") for block in messages[1]["content"])
+
+
+def test_build_explore_messages_include_egocentric_clues_with_frontiers():
+    state = AEQAVisualState(
+        question="What is hanging on the oven handle?",
+        snapshots=[],
+        frontiers=[AEQAFrontier(frontier_id="4", image_b64="frontier-b64", label="Frontier 4")],
+        egocentric_views=[
+            AEQAImage(
+                image_id="current_view",
+                image_b64="current-b64",
+                label="Current egocentric view",
+                source="egocentric",
+            )
+        ],
+    )
+
+    messages = build_explore_messages(state)
+    content = messages[1]["content"]
+
+    assert any("Current / Egocentric Views" in block.get("text", "") for block in content)
+    assert any("Current egocentric view" in block.get("text", "") for block in content)
+    image_urls = [
+        block["image_url"]["url"]
+        for block in content
+        if block.get("type") == "image_url"
+    ]
+    assert any(url.endswith(",current-b64") for url in image_urls)
+    assert any(url.endswith(",frontier-b64") for url in image_urls)
+
+
+def test_build_explore_messages_groups_visual_clues_before_frontiers():
+    state = AEQAVisualState(
+        question="What is hanging on the oven handle?",
+        snapshots=[AEQAImage(image_id="snap-0", image_b64="snap-b64", label="Snapshot 0")],
+        frontiers=[AEQAFrontier(frontier_id="4", image_b64="frontier-b64", label="Frontier 4")],
+        egocentric_views=[
+            AEQAImage(
+                image_id="current_view",
+                image_b64="current-b64",
+                label="Current egocentric view",
+                source="egocentric",
+            )
+        ],
+    )
+
+    text_blocks = [
+        block.get("text", "")
+        for block in build_explore_messages(state)[1]["content"]
+        if block.get("type") == "text"
+    ]
+    joined = "\n".join(text_blocks)
+
+    assert (
+        joined.index("Previously Observed Clues")
+        < joined.index("Current / Egocentric Views")
+        < joined.index("Available Snapshots")
+        < joined.index("Available Exploration Directions")
+    )
 
 
 def test_prompt_builders_skip_empty_image_payloads():

@@ -73,6 +73,28 @@ def build_content(pairs: list[tuple[str, Optional[str]]]) -> list[dict]:
     return content
 
 
+def _valid_images(images: list[AEQAImage]) -> list[AEQAImage]:
+    return [image for image in images if image.image_b64]
+
+
+def _append_image_section(
+    pairs: list[tuple[str, Optional[str]]],
+    *,
+    title: str,
+    images: list[AEQAImage],
+    empty_text: str,
+) -> None:
+    pairs.append((title, None))
+    valid_images = _valid_images(images)
+    if not valid_images:
+        pairs.append((empty_text, None))
+        return
+    for idx, image in enumerate(valid_images):
+        label = image.label or f"Image {idx}"
+        pairs.append((f"{label}: ", image.image_b64))
+        pairs.append(("\n", None))
+
+
 def parse_retain_indices(response: str, max_count: int, prefix: str = "Retain Snapshots") -> list[int]:
     """Parse snapshot-retention indices out of a planner response.
 
@@ -152,8 +174,8 @@ ANSWER_SYSTEM_PROMPT = """Task: You are an indoor agent that needs to determine 
 
 Instructions:
 1. Carefully analyze the question's required object, attribute, relationship, or state.
-2. Carefully inspect all available snapshots.
-3. If any snapshot contains enough visual evidence, output Answer.
+2. Carefully inspect all available snapshots and current/egocentric views.
+3. If any image contains enough visual evidence, output Answer.
 4. If the evidence is insufficient, output Continue Exploration.
 """
 
@@ -183,8 +205,14 @@ def build_answer_messages(state: AEQAVisualState) -> list[dict]:
     ]
     if state.memory_text:
         pairs.append((state.memory_text + "\n", None))
+    _append_image_section(
+        pairs,
+        title="Current / Egocentric Views:\n",
+        images=state.egocentric_views,
+        empty_text="No current egocentric views available\n",
+    )
     pairs.append(("Available Snapshots:\n", None))
-    snapshots = [snapshot for snapshot in state.snapshots if snapshot.image_b64]
+    snapshots = _valid_images(state.snapshots)
     if not snapshots:
         pairs.append(("No snapshots available\n", None))
     for idx, snapshot in enumerate(snapshots):
@@ -212,7 +240,14 @@ def build_explore_messages(state: AEQAVisualState) -> list[dict]:
     if state.tool_feedback:
         pairs.append(("Tool Feedback:\n" + state.tool_feedback + "\n", None))
     pairs.append(("Previously Observed Clues:\n", None))
-    snapshots = [snapshot for snapshot in state.snapshots if snapshot.image_b64]
+    _append_image_section(
+        pairs,
+        title="Current / Egocentric Views:\n",
+        images=state.egocentric_views,
+        empty_text="No current egocentric views available\n",
+    )
+    pairs.append(("Available Snapshots:\n", None))
+    snapshots = _valid_images(state.snapshots)
     for idx, snapshot in enumerate(snapshots):
         label = snapshot.label or f"Snapshot {idx}"
         pairs.append((f"{label}: ", snapshot.image_b64))
