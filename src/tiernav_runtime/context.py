@@ -109,18 +109,24 @@ class ContextCompiler:
             )
         task_instruction = self._render_task_instruction(state)
         memory_text = self._render_memory(state, include_memory)
+        task_state = self._render_task_state(state)
         recent_trace = self._render_recent_trace(state)
         observation_text = self._render_observation(state)
+        scene_graph_text = self._render_scene_graph_memory(env, include_memory)
         targets_text = self._render_available_targets(env)
+        tool_feedback = self._render_tool_feedback(state)
         policy_text = policy_hint
 
         return [
             _section("task_instruction", task_instruction, cacheable=True),
             _section("action_schema", action_schema, cacheable=True),
             _section("memory_index", memory_text, cacheable=True),
+            _section("task_state", task_state, cacheable=False),
             _section("recent_trace", recent_trace, cacheable=False),
             _section("current_observation", observation_text, cacheable=False),
+            _section("scene_graph_memory", scene_graph_text, cacheable=False),
             _section("available_targets", targets_text, cacheable=False),
+            _section("tool_feedback", tool_feedback, cacheable=False),
             _section("policy_hint", policy_text, cacheable=False),
         ]
 
@@ -146,6 +152,9 @@ class ContextCompiler:
             "Required fields: action_type (one of the available tools), reason (string), expected (string).",
             "Optional fields: object_name (str), seed_id (str), frontier_id (str), view_idx (int), answer (str, required for submit_answer).",
             "Pick frontier_id / seed_id / object_name from the available_targets section below. Do NOT invent ids.",
+            "Do not call explore_frontier when frontiers is none or absent.",
+            "Do not call explore_seed when seeds is none or absent.",
+            "Do not call navigate_to_object when objects is none or absent.",
             "Strategy: explore_panorama to observe -> explore_frontier/explore_seed to move -> navigate_to_object once target visible -> submit_answer when done.",
             'Example: {"action_type": "explore_panorama", "reason": "Need to observe surroundings", "expected": "Get room layout"}',
             'For target tools, copy the exact frontier_id, seed_id, or object_name from available_targets.',
@@ -161,6 +170,22 @@ class ContextCompiler:
         if pack is None:
             return ""
         return _format_memory_pack(pack)
+
+    @staticmethod
+    def _render_task_state(state: EpisodeState) -> str:
+        lines = [
+            "continuous_context: enabled",
+            f"task_mode: {state.task_mode.value}",
+            f"round_index: {state.round_index}",
+            f"step_index: {state.step_index}",
+            "workflow: observe -> choose a valid target -> move -> update memory -> submit only when supported.",
+            "Do not repeat failed actions with the same target; use tool_feedback and scene_graph_memory to change strategy.",
+        ]
+        if state.failure_type:
+            lines.append(f"last_failure_type: {state.failure_type}")
+        if state.distance_to_goal is not None:
+            lines.append(f"distance_to_goal_m: {state.distance_to_goal:.3f}")
+        return "\n".join(lines)
 
     @staticmethod
     def _render_recent_trace(state: EpisodeState) -> str:
@@ -179,6 +204,73 @@ class ContextCompiler:
         return "\n".join(parts)
 
     @staticmethod
+    def _render_scene_graph_memory(env: Any, include_memory: bool) -> str:
+        if not include_memory or env is None:
+            return ""
+        graph = getattr(env, "scene_graph_memory", None)
+        if graph is None:
+            session = getattr(env, "memory_session", None)
+            graph = getattr(session, "scene_graph", None) if session is not None else None
+        if graph is None or not hasattr(graph, "get_summary_for_planner"):
+            return ""
+        try:
+            return str(graph.get_summary_for_planner())
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _render_tool_feedback(state: EpisodeState) -> str:
+        obs = state.last_observation
+        raw = obs.raw or {}
+        outcome = str(raw.get("outcome", "") or "")
+        try:
+            path_length = float(raw.get("path_length", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            path_length = 0.0
+        try:
+            path_delta = float(raw.get("path_delta", path_length) or 0.0)
+        except (TypeError, ValueError):
+            path_delta = 0.0
+        action = (
+            state.current_decision.action_type
+            if state.current_decision is not None
+            else str(raw.get("action_type", "") or "")
+        )
+        is_stationary_panorama = (
+            action == "explore_panorama"
+            and outcome == "panorama_complete"
+            and state.step_index > 0
+            and path_delta <= 0.0
+        )
+        if (
+            outcome not in {"target_not_reached", "detection_failed", "error"}
+            and not is_stationary_panorama
+        ):
+            return ""
+
+        parts = []
+        if action:
+            parts.append(f"last_tool_action: {action}")
+        parts.append(f"last_tool_outcome: {outcome}")
+        if is_stationary_panorama:
+            parts.append(
+                "guidance: panorama already refreshed context without moving; choose a valid available target and move."
+            )
+        else:
+            parts.append(
+                "guidance: the last tool did not make useful progress; try a different target or observe before retrying."
+            )
+        subgoal = raw.get("subgoal")
+        progress = raw.get("progress") or obs.summary
+        if subgoal:
+            parts.append(f"last_subgoal: {subgoal}")
+        if progress:
+            parts.append(f"last_progress: {progress}")
+        if obs.object_ids:
+            parts.append("objects_nearby: " + ", ".join(obs.object_ids))
+        return "\n".join(parts)
+
+    @staticmethod
     def _render_available_targets(env: Any) -> str:
         """List frontiers/seeds/objects the planner can target this round.
 
@@ -193,13 +285,13 @@ class ContextCompiler:
         # Frontiers — unexplored boundary regions the agent can navigate to.
         tsdf = getattr(env, "tsdf_planner", None)
         frontiers = getattr(tsdf, "frontiers", None) if tsdf is not None else None
-        import sys as _sys
         scene = getattr(env, "scene", None)
         _objs = getattr(scene, "objects", None) if scene is not None else None
-        print(f"[DIAG _render_available_targets] tsdf={tsdf is not None} frontiers_n={len(frontiers) if frontiers else 0} scene={scene is not None} objects_n={len(_objs) if _objs else 0}", file=_sys.stderr)
         if tsdf is not None and frontiers:
             ids = [str(getattr(f, "frontier_id", "?")) for f in frontiers[:20]]
             lines.append("frontiers: " + ", ".join(ids))
+        elif tsdf is not None:
+            lines.append("frontiers: none")
 
         # Seeds — room-entry points registered by SeedViewManager.
         seeds = getattr(tsdf, "seeds", None) if tsdf is not None else None
@@ -207,6 +299,18 @@ class ContextCompiler:
             seed_ids = [str(getattr(s, "seed_id", s) if not isinstance(s, str) else s)
                         for s in list(seeds)[:20]]
             lines.append("seeds: " + ", ".join(seed_ids))
+        elif tsdf is not None:
+            rooms = getattr(tsdf, "room_regions", None) or []
+            if rooms:
+                room_ids = [
+                    str(getattr(room, "room_id"))
+                    for room in list(rooms)[:20]
+                    if getattr(room, "room_id", None) is not None
+                ]
+                if room_ids:
+                    lines.append("seeds: " + ", ".join(room_ids))
+            else:
+                lines.append("seeds: none")
 
         # Nearby objects — from scene.objects, limited to class names.
         if scene is not None:
@@ -218,5 +322,9 @@ class ContextCompiler:
                         names.append(str(obj["class_name"]))
                 if names:
                     lines.append("objects: " + ", ".join(sorted(set(names))))
+                else:
+                    lines.append("objects: none")
+            else:
+                lines.append("objects: none")
 
         return "\n".join(lines)

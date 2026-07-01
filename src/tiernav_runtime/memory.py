@@ -254,6 +254,7 @@ class MemorySession:
         memory_factory: Callable[..., MemoryService] = MemoryService,
         notebook: Optional[Any] = None,
         scene_graph: Optional[Any] = None,
+        scene_graph_source: Optional[Any] = None,
     ) -> None:
         self.scope: MemoryScope = scope
         self._memory_factory = memory_factory
@@ -261,6 +262,9 @@ class MemorySession:
         self.notebook: Optional[Any] = notebook if scope is MemoryScope.SUBTASK_SEQUENCE else None
         self.scene_graph: Optional[Any] = (
             scene_graph if scope is MemoryScope.SUBTASK_SEQUENCE else None
+        )
+        self.scene_graph_source: Optional[Any] = (
+            scene_graph_source if scope is MemoryScope.SUBTASK_SEQUENCE else None
         )
         self._active: Optional[MemoryService] = None
         self._episode_id: Optional[str] = None
@@ -317,7 +321,60 @@ class MemorySession:
         self.current_memory.update_from_observation(
             observation, action_type=action_type, round_index=round_index
         )
+        self._mirror_scene_graph_observation(
+            observation, action_type=action_type, round_index=round_index
+        )
 
     def query(self, query: str) -> MemoryPack:
         """Query the active :class:`MemoryService`."""
         return self.current_memory.query(query)
+
+    def _mirror_scene_graph_observation(
+        self,
+        observation: Observation,
+        *,
+        action_type: str,
+        round_index: int,
+    ) -> None:
+        """Mirror runtime observations into optional SceneGraphMemory.
+
+        This is intentionally duck-typed so the runtime layer does not import
+        the heavier scene graph module at import time. Failures are swallowed:
+        the contract memory remains the source used by the graph, and the
+        local scene-graph artifact is a best-effort materialized view.
+        """
+        graph = self.scene_graph
+        if graph is None or not hasattr(graph, "add_evidence"):
+            return
+
+        room_id = _room_id_as_int(observation.room_id)
+        summary = observation.summary or str(observation.raw.get("progress", "") or "")
+        outcome = str(observation.raw.get("outcome", "") or summary)
+        try:
+            if (
+                self.scene_graph_source is not None
+                and hasattr(graph, "sync_rooms_from_tsdf")
+            ):
+                graph.sync_rooms_from_tsdf(self.scene_graph_source)
+            graph.add_evidence(
+                decision_id=int(round_index),
+                action=action_type,
+                outcome=outcome,
+                room_id=room_id,
+                key_frame_ids=list(observation.image_ids),
+                objects_nearby=list(observation.object_ids),
+                progress=summary,
+            )
+            if room_id >= 0 and hasattr(graph, "increment_room_visit"):
+                graph.increment_room_visit(room_id)
+        except Exception:
+            return
+
+
+def _room_id_as_int(room_id: Optional[str]) -> int:
+    if room_id is None:
+        return -1
+    try:
+        return int(room_id)
+    except (TypeError, ValueError):
+        return -1

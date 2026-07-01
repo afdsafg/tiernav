@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from pydantic import ValidationError
+import yaml
 
 from src.tiernav_runtime.config import ProviderConfig, RuntimeConfig
 from src.tiernav_runtime.contracts import RunSpec, RuntimeMode
@@ -161,3 +163,19 @@ def test_runtime_config_requires_provider():
         assert "provider" in str(exc)
     else:
         raise AssertionError("RuntimeConfig accepted a missing provider")
+
+
+def test_goatbench_config_enables_room_segmentation():
+    """GOATBench runtime relies on legacy TSDF room segmentation for seeds."""
+    cfg_path = Path(__file__).resolve().parents[2] / "cfg" / "eval_goatbench.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+
+    room_cfg = cfg["planner"].get("room_segmentation")
+
+    assert isinstance(room_cfg, dict)
+    assert room_cfg["area_source"] == "navigable"
+    assert room_cfg["segmentation_method"] in {
+        "dilation_watershed",
+        "region_growing_watershed",
+    }
+    assert room_cfg["min_room_area"] > 0

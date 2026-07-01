@@ -23,6 +23,8 @@ cross-subtask reuse, persist across subtasks via export/import (V2 feature).
 from __future__ import annotations
 
 import logging
+import json
+import os
 import re
 import time
 from collections import defaultdict
@@ -407,6 +409,16 @@ class SceneGraphMemory:
                 "num_queries": self._query_counter,
             },
         }
+
+    def persist_json(self, path: str | os.PathLike) -> str:
+        """Persist the materialized scene graph to a local JSON file."""
+        out_path = os.fspath(path)
+        parent = os.path.dirname(out_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(self.to_dict(), fh, indent=2, ensure_ascii=False)
+        return out_path
 
     def get_summary_for_planner(self, max_rooms: int = 8) -> str:
         """Compact text summary for injection into the Planner prompt."""

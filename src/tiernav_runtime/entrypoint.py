@@ -97,7 +97,7 @@ class RuntimeEntrypoint:
         services = RuntimeServices(
             planner=planner,
             tools=build_real_tool_registry(executor),
-            memory=MemoryService(),
+            memory=memory_scope_adapter if memory_scope_adapter is not None else MemoryService(),
             policy=policy if policy is not None else WorkflowPolicy(),
             environment=environment,
             memory_session=memory_scope_adapter,
@@ -118,6 +118,7 @@ class RuntimeEntrypoint:
         raises, the log is left with only ``episode_started``; callers should
         treat a partial log as a failed run rather than replay it as terminal.
         """
+        self._ensure_memory_session_started(request)
         event_log_path = Path(spec.output_dir) / request.episode_id / "events.jsonl"
         if event_log_path.exists():
             raise FileExistsError(
@@ -200,6 +201,25 @@ class RuntimeEntrypoint:
             except (TypeError, ValueError):
                 pass
         return 0.0
+
+    def _ensure_memory_session_started(self, request: EpisodeRequest) -> None:
+        session = self.services.memory_session
+        if session is None:
+            return
+        try:
+            session.current_memory
+            return
+        except RuntimeError:
+            pass
+        subtask_index = request.goal_metadata.get("subtask_index")
+        question_id = request.episode_id if request.task_name == "aeqa" else None
+        session.start_session(
+            episode_id=request.episode_id,
+            question_id=question_id,
+            subtask_index=(
+                int(subtask_index) if isinstance(subtask_index, int) else None
+            ),
+        )
 
 
 def episode_result_to_legacy_dict(

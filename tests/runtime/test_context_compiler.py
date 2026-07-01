@@ -55,9 +55,12 @@ def test_sections_ordered_cacheable_first():
         "task_instruction",
         "action_schema",
         "memory_index",
+        "task_state",
         "recent_trace",
         "current_observation",
+        "scene_graph_memory",
         "available_targets",
+        "tool_feedback",
         "policy_hint",
     ]
     assert names == expected_order
@@ -78,8 +81,11 @@ def test_required_section_names_present():
         "task_instruction",
         "action_schema",
         "memory_index",
+        "task_state",
         "recent_trace",
         "current_observation",
+        "scene_graph_memory",
+        "tool_feedback",
         "policy_hint",
     } <= names
 
@@ -109,6 +115,18 @@ def test_task_instruction_does_not_contain_fake_target_ids():
     assert '"frontier_id": "0"' not in task.content
     assert '"seed_id": "0"' not in task.content
     assert '"object_name": "chair"' not in task.content
+
+
+def test_task_instruction_forbids_target_tools_without_listed_targets():
+    state = _base_state()
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema=SCHEMA)
+    task = {s.name: s for s in sections}["task_instruction"]
+
+    assert "Do not call explore_frontier when frontiers is none or absent." in task.content
+    assert "Do not call explore_seed when seeds is none or absent." in task.content
+    assert "Do not call navigate_to_object when objects is none or absent." in task.content
 
 
 def test_same_input_gives_stable_content_hash():
@@ -233,6 +251,78 @@ def test_render_prompt_includes_memory_pack_and_observation():
     assert "A red chair is visible near the window." in rendered
     # action schema content present too.
     assert "explore_frontier" in rendered
+
+
+def test_tool_feedback_warns_after_repeated_panorama_without_movement():
+    """Panorama is useful once; repeated in-place observations need a move hint."""
+    state = _base_state(
+        round_index=2,
+        step_index=2,
+        current_decision={
+            "action_type": "explore_panorama",
+            "arguments": {},
+        },
+        last_observation=Observation(
+            summary="Panorama: 8 views at step 2",
+            object_ids=["chair"],
+            raw={
+                "outcome": "panorama_complete",
+                "progress": "Panorama: 8 views at step 2",
+                "path_length": 0.0,
+            },
+        ),
+    )
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema=SCHEMA)
+    feedback = {s.name: s for s in sections}["tool_feedback"]
+
+    assert "last_tool_action: explore_panorama" in feedback.content
+    assert "choose a valid available target and move" in feedback.content
+    assert "objects_nearby: chair" in feedback.content
+
+
+def test_tool_feedback_tolerates_non_numeric_path_length():
+    state = _base_state(
+        round_index=2,
+        step_index=2,
+        current_decision={"action_type": "explore_panorama"},
+        last_observation=Observation(
+            summary="Panorama complete",
+            raw={
+                "outcome": "panorama_complete",
+                "path_length": "unknown",
+            },
+        ),
+    )
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema=SCHEMA)
+    feedback = {s.name: s for s in sections}["tool_feedback"]
+
+    assert "last_tool_action: explore_panorama" in feedback.content
+
+
+def test_tool_feedback_uses_path_delta_for_stationary_panorama():
+    state = _base_state(
+        round_index=4,
+        step_index=4,
+        current_decision={"action_type": "explore_panorama"},
+        last_observation=Observation(
+            summary="Panorama complete after earlier movement",
+            raw={
+                "outcome": "panorama_complete",
+                "path_length": 3.5,
+                "path_delta": 0.0,
+            },
+        ),
+    )
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema=SCHEMA)
+    feedback = {s.name: s for s in sections}["tool_feedback"]
+
+    assert "choose a valid available target and move" in feedback.content
 
 
 def test_instance_render_prompt_matches_module_render_prompt():
@@ -390,3 +480,116 @@ def test_task_instruction_renders_only_planner_safe_fields():
     # No goal_metadata / scoring surface is rendered.
     assert "goal_metadata" not in task.content
     assert "goal_object_ids_for_scoring" not in task.content
+
+
+def test_task_state_contains_agent_workflow_guidance():
+    state = _base_state(task_name="goatbench", task_mode="goal_navigation")
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema=SCHEMA)
+    task_state = {s.name: s for s in sections}["task_state"]
+
+    assert "continuous_context" in task_state.content
+    assert "goal_navigation" in task_state.content
+    assert "Do not repeat failed actions" in task_state.content
+    assert not task_state.cacheable
+
+
+class _SceneGraph:
+    def get_summary_for_planner(self):
+        return "## Scene Graph Memory\n- Room 2 [partially_explored] objects=['sofa'] evidence=1"
+
+
+class _EnvWithSceneGraph:
+    scene_graph_memory = _SceneGraph()
+
+
+def test_scene_graph_memory_section_uses_env_scene_graph_summary():
+    state = _base_state()
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(
+        state,
+        action_schema=SCHEMA,
+        env=_EnvWithSceneGraph(),
+    )
+    scene_graph = {s.name: s for s in sections}["scene_graph_memory"]
+
+    assert "Room 2" in scene_graph.content
+    assert "sofa" in scene_graph.content
+    assert not scene_graph.cacheable
+
+
+def test_tool_feedback_section_surfaces_failed_tool_result():
+    state = _base_state(
+        current_decision=None,
+        last_observation=Observation(
+            summary="Navigation status: no path to frontier 7",
+            raw={
+                "outcome": "target_not_reached",
+                "subgoal": "Navigate to frontier 7",
+                "progress": "No valid path",
+            },
+        ),
+    )
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema=SCHEMA)
+    feedback = {s.name: s for s in sections}["tool_feedback"]
+
+    assert "target_not_reached" in feedback.content
+    assert "Navigate to frontier 7" in feedback.content
+    assert "try a different target" in feedback.content
+
+
+def test_available_targets_does_not_print_diagnostics(capsys):
+    state = _base_state()
+    compiler = ContextCompiler()
+
+    compiler.compile(state, action_schema=SCHEMA, env=object())
+
+    captured = capsys.readouterr()
+    assert "[DIAG" not in captured.err
+
+
+class _RoomRegion:
+    def __init__(self, room_id: int):
+        self.room_id = room_id
+
+
+class _TsdfWithRooms:
+    frontiers = []
+    seeds = []
+    room_regions = [_RoomRegion(2), _RoomRegion(5)]
+
+
+class _EnvWithRoomRegions:
+    tsdf_planner = _TsdfWithRooms()
+
+
+def test_available_targets_uses_room_regions_as_seed_targets():
+    state = _base_state(task_name="goatbench", task_mode="goal_navigation")
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(
+        state,
+        action_schema=SCHEMA,
+        env=_EnvWithRoomRegions(),
+    )
+    targets = {s.name: s for s in sections}["available_targets"]
+
+    assert "seeds: 2, 5" in targets.content
+
+
+def test_available_targets_marks_missing_frontiers_as_none_when_seeds_exist():
+    state = _base_state(task_name="goatbench", task_mode="goal_navigation")
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(
+        state,
+        action_schema=SCHEMA,
+        env=_EnvWithRoomRegions(),
+    )
+    targets = {s.name: s for s in sections}["available_targets"]
+
+    assert "frontiers: none" in targets.content

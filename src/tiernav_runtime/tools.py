@@ -211,9 +211,16 @@ def _evidence_to_observation(evidence: Any) -> Observation:
 
 
 def _evidence_to_result(
-    call: ToolCall, evidence: Any, path_length: float, terminal: bool = False
+    call: ToolCall,
+    evidence: Any,
+    path_length: float,
+    terminal: bool = False,
+    path_delta: float = 0.0,
 ) -> ToolResult:
     observation = _evidence_to_observation(evidence)
+    observation.raw["action_type"] = call.action_type
+    observation.raw["path_length"] = float(path_length)
+    observation.raw["path_delta"] = float(path_delta)
     outcome = observation.raw.get("outcome", "")
     failed_outcomes = {"target_not_reached", "detection_failed", "error"}
     ok = outcome not in failed_outcomes
@@ -263,11 +270,23 @@ class _ExecutorNavigationTool(RuntimeTool):
 
     def run(self, call: ToolCall) -> ToolResult:
         try:
+            before_path = float(self._executor.path_length)
+        except Exception:
+            before_path = 0.0
+        try:
             evidence = self.invoke(call)
         except Exception as exc:  # noqa: BLE001 - intentional wrap
             return _error_result(call, exc)
+        try:
+            after_path = float(self._executor.path_length)
+        except Exception:
+            after_path = before_path
         return _evidence_to_result(
-            call, evidence, self._executor.path_length, terminal=self.terminal
+            call,
+            evidence,
+            after_path,
+            terminal=self.terminal,
+            path_delta=max(0.0, after_path - before_path),
         )
 
 

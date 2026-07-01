@@ -333,6 +333,8 @@ def test_real_registry_explore_panorama_dispatches_and_builds_result():
     assert obs.raw["subgoal"] == "fake-subgoal"
     assert obs.raw["progress"] == "reached"
     assert obs.raw["salient"] == ["red chair"]
+    assert obs.raw["path_length"] == pytest.approx(2.5)
+    assert obs.raw["path_delta"] == pytest.approx(0.0)
 
 
 def test_real_registry_navigate_to_object_passes_args():

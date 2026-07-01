@@ -16,19 +16,12 @@ import math
 import time
 import json
 import logging
+import re
+from pathlib import Path
 import matplotlib.pyplot as plt
 
-import open_clip
-from ultralytics import SAM, YOLOWorld
-
-from src.habitat import pose_habitat_to_tsdf
 from src.geom import get_cam_intr, get_scene_bnds
-from src.tsdf_planner import TSDFPlanner, Frontier, SnapShot
-from src.scene_goatbench import Scene
-from src.utils import resize_image, calc_agent_subtask_distance, get_pts_angle_goatbench
 from src.goatbench_utils import prepare_goatbench_navigation_goals
-from src.query_vlm_goatbench import query_vlm_for_response
-from src.logger_goatbench import Logger
 
 from src.tiernav_runtime.config import ProviderConfig
 from src.tiernav_runtime.contracts import PlannerDecision
@@ -36,6 +29,49 @@ from src.tiernav_runtime.contracts import PlannerDecision
 # Known corrupted scenes on server — loading these crashes habitat-sim.
 # Populated by try/except during runs. Persisted to corrupted_scenes.json.
 CORRUPTED_SCENES: set[str] = set()
+
+
+def _heavy_goatbench_imports():
+    """Import Habitat/model-backed modules only for real evaluation runs."""
+    import open_clip
+    from ultralytics import SAM, YOLOWorld
+    from src.habitat import pose_habitat_to_tsdf
+    from src.tsdf_planner import TSDFPlanner, Frontier, SnapShot
+    from src.scene_goatbench import Scene
+    from src.query_vlm_goatbench import query_vlm_for_response
+    from src.logger_goatbench import Logger
+
+    return {
+        "open_clip": open_clip,
+        "SAM": SAM,
+        "YOLOWorld": YOLOWorld,
+        "pose_habitat_to_tsdf": pose_habitat_to_tsdf,
+        "TSDFPlanner": TSDFPlanner,
+        "Frontier": Frontier,
+        "SnapShot": SnapShot,
+        "Scene": Scene,
+        "query_vlm_for_response": query_vlm_for_response,
+        "Logger": Logger,
+    }
+
+
+def _safe_artifact_component(value) -> str:
+    text = str(value)
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", text)
+    return text.strip("_") or "unknown"
+
+
+def _goatbench_runtime_output_dir(output_root, scene_id, episode_id) -> Path:
+    artifact_id = (
+        f"{_safe_artifact_component(scene_id)}_"
+        f"{_safe_artifact_component(episode_id)}"
+    )
+    return Path(output_root) / "two_tier_workflow" / "goatbench" / artifact_id
+
+
+def _persist_scene_graph_memory(scene_graph_memory, runtime_output_dir) -> str:
+    path = Path(runtime_output_dir) / "room_view_object_graph.json"
+    return scene_graph_memory.persist_json(path)
 
 
 def run_goatbench_subtask_legacy(
@@ -64,6 +100,14 @@ def run_goatbench_subtask_legacy(
 
     Returns updated global_step (threaded across subtasks).
     """
+    heavy = _heavy_goatbench_imports()
+    pose_habitat_to_tsdf = heavy["pose_habitat_to_tsdf"]
+    TSDFPlanner = heavy["TSDFPlanner"]
+    Frontier = heavy["Frontier"]
+    SnapShot = heavy["SnapShot"]
+    query_vlm_for_response = heavy["query_vlm_for_response"]
+    from src.utils import resize_image, calc_agent_subtask_distance
+
     for subtask_idx, (goal_type, subtask_goal) in enumerate(
         zip(all_subtask_goal_types, all_subtask_goals)
     ):
@@ -518,8 +562,12 @@ def _run_goatbench_runtime(
     from src.tiernav_runtime.entrypoint import RuntimeEntrypoint
     from src.agent_executor import Executor
     from src.utils import calc_agent_subtask_distance
+    from src.scene_graph_memory import SceneGraphMemory
 
-    output_dir = str(cfg.output_dir)
+    output_dir = str(
+        _goatbench_runtime_output_dir(cfg.output_dir, scene_id, episode_id)
+    )
+    os.makedirs(output_dir, exist_ok=True)
 
     provider_config = ProviderConfig(
         api_key_env="QWEN_PLANNER_API_KEY",
@@ -565,8 +613,16 @@ def _run_goatbench_runtime(
     )
 
     # --- MemorySession: one per episode, reused across subtasks ---
-    memory_session = MemorySession(scope=MemoryScope.SUBTASK_SEQUENCE)
+    scene_graph_memory = SceneGraphMemory()
+    scene_graph_memory.sync_rooms_from_tsdf(tsdf_planner)
+    memory_session = MemorySession(
+        scope=MemoryScope.SUBTASK_SEQUENCE,
+        scene_graph=scene_graph_memory,
+        scene_graph_source=tsdf_planner,
+    )
     memory_session.start_session(episode_id=episode_id)
+    env_service.memory_session = memory_session
+    env_service.scene_graph_memory = scene_graph_memory
 
     # --- RunSpec ---
     spec = RunSpec(
@@ -697,6 +753,14 @@ def _run_goatbench_runtime(
 
             results.append(result)
             global_step += 1
+            try:
+                _persist_scene_graph_memory(scene_graph_memory, output_dir)
+            except Exception as graph_e:
+                logging.warning(
+                    "Scene graph memory persist failed for subtask %d: %s",
+                    subtask_idx,
+                    graph_e,
+                )
 
             try:
                 _feed_result_to_logger(
@@ -710,6 +774,10 @@ def _run_goatbench_runtime(
                 logging.warning("Logger feed failed for subtask %d: %s", subtask_idx, log_e)
 
     finally:
+        try:
+            _persist_scene_graph_memory(scene_graph_memory, output_dir)
+        except Exception as graph_e:
+            logging.warning("Scene graph memory final persist failed: %s", graph_e)
         env_service.teardown_session()
 
     return global_step
@@ -717,6 +785,15 @@ def _run_goatbench_runtime(
 
 def main(cfg, start_ratio=0.0, end_ratio=1.0, split=1):
     global CORRUPTED_SCENES
+    heavy = _heavy_goatbench_imports()
+    open_clip = heavy["open_clip"]
+    SAM = heavy["SAM"]
+    YOLOWorld = heavy["YOLOWorld"]
+    TSDFPlanner = heavy["TSDFPlanner"]
+    Scene = heavy["Scene"]
+    Logger = heavy["Logger"]
+    from src.utils import get_pts_angle_goatbench
+
     CORRUPTED_SCENES = _load_corrupted_scenes(cfg.output_dir)
     # load the default concept graph config
     cfg_cg = OmegaConf.load(cfg.concept_graph_config_path)

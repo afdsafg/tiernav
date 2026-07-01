@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from src.tiernav_runtime.contracts import (
+    BenchmarkRule,
     MemoryPack,
     MemoryScope,
     Observation,
@@ -449,3 +450,214 @@ def test_session_query_delegates_to_active_memory():
     pack = session.query("sofa")
     assert isinstance(pack, MemoryPack)
     assert "snap-img-1" in pack.evidence_ids
+
+
+def test_real_entrypoint_uses_provided_memory_session():
+    """Production runtime must query/update the active MemorySession, not a
+    detached fresh MemoryService.
+    """
+    from src.tiernav_runtime.entrypoint import RuntimeEntrypoint
+
+    class Planner:
+        def decide(self, prompt: str, **kwargs):
+            return {"action_type": "submit_answer", "arguments": {"answer": "done"}}
+
+    class Executor:
+        @property
+        def path_length(self) -> float:
+            return 0.0
+
+        def explore_panorama(self, config=None):
+            raise AssertionError("not used")
+
+        def navigate_to_object(self, object_name, view_idx=None):
+            raise AssertionError("not used")
+
+        def explore_seed(self, seed_id):
+            raise AssertionError("not used")
+
+        def explore_frontier(self, frontier_id):
+            raise AssertionError("not used")
+
+    session = MemorySession(scope=MemoryScope.SUBTASK_SEQUENCE)
+    session.start_session(episode_id="ep-1")
+
+    entrypoint = RuntimeEntrypoint.with_real_services(
+        planner=Planner(),
+        environment=object(),
+        rule=BenchmarkRule(
+            success_distance_m=1.0,
+            requires_explicit_stop=True,
+            memory_scope=MemoryScope.SUBTASK_SEQUENCE,
+            scoring_mode="distance",
+        ),
+        executor=Executor(),
+        memory_scope_adapter=session,
+    )
+
+    assert entrypoint.services.memory is session
+
+
+def test_real_entrypoint_auto_starts_provided_memory_session(tmp_path):
+    """Entrypoint should make a provided MemorySession usable even when the
+    caller did not explicitly start it.
+    """
+    from src.tiernav_runtime.contracts import EpisodeRequest, RunSpec, TaskMode
+    from src.tiernav_runtime.entrypoint import RuntimeEntrypoint
+
+    class Planner:
+        def decide(self, prompt: str, **kwargs):
+            return {"action_type": "submit_answer", "arguments": {"answer": "done"}}
+
+    class Executor:
+        @property
+        def path_length(self) -> float:
+            return 0.0
+
+        def explore_panorama(self, config=None):
+            raise AssertionError("not used")
+
+        def navigate_to_object(self, object_name, view_idx=None):
+            raise AssertionError("not used")
+
+        def explore_seed(self, seed_id):
+            raise AssertionError("not used")
+
+        def explore_frontier(self, frontier_id):
+            raise AssertionError("not used")
+
+    session = MemorySession(scope=MemoryScope.PER_QUESTION)
+    entrypoint = RuntimeEntrypoint.with_real_services(
+        planner=Planner(),
+        environment=object(),
+        rule=BenchmarkRule(
+            success_distance_m=1.0,
+            requires_explicit_stop=False,
+            memory_scope=MemoryScope.PER_QUESTION,
+            scoring_mode="answer",
+        ),
+        executor=Executor(),
+        memory_scope_adapter=session,
+    )
+
+    result = entrypoint.run(
+        RunSpec(
+            run_id="run-1",
+            task_name="aeqa",
+            dataset_split="test",
+            output_dir=str(tmp_path),
+            planner_provider="test",
+            planner_model="test",
+        ),
+        EpisodeRequest(
+            episode_id="ep-1",
+            scene_id="scene",
+            task_name="aeqa",
+            task_mode=TaskMode.QUESTION_ANSWERING,
+            prompt="What is visible?",
+            output_dir=str(tmp_path),
+        ),
+    )
+
+    assert result.episode_id == "ep-1"
+    assert session.current_memory is not None
+
+
+class FakeSceneGraph:
+    def __init__(self):
+        self.calls = []
+
+    def add_evidence(self, **kwargs):
+        self.calls.append(kwargs)
+
+
+def test_session_mirrors_observation_into_scene_graph():
+    scene_graph = FakeSceneGraph()
+    session = MemorySession(
+        scope=MemoryScope.SUBTASK_SEQUENCE,
+        scene_graph=scene_graph,
+    )
+    session.start_session(episode_id="ep-1", subtask_index=0)
+
+    session.update_from_observation(
+        _observation(
+            summary="saw a sofa near the kitchen doorway",
+            image_ids=["img-1"],
+            object_ids=["sofa", "doorway"],
+            room_id="2",
+        ),
+        action_type="explore_panorama",
+        round_index=3,
+    )
+
+    assert scene_graph.calls == [{
+        "decision_id": 3,
+        "action": "explore_panorama",
+        "outcome": "saw a sofa near the kitchen doorway",
+        "room_id": 2,
+        "key_frame_ids": ["img-1"],
+        "objects_nearby": ["sofa", "doorway"],
+        "progress": "saw a sofa near the kitchen doorway",
+    }]
+
+
+class FakeSceneGraphWithRooms(FakeSceneGraph):
+    def __init__(self):
+        super().__init__()
+        self.synced_sources = []
+        self.visited_rooms = []
+
+    def sync_rooms_from_tsdf(self, source):
+        self.synced_sources.append(source)
+
+    def increment_room_visit(self, room_id):
+        self.visited_rooms.append(room_id)
+
+
+def test_session_syncs_scene_graph_rooms_before_mirroring_observation():
+    tsdf_source = object()
+    scene_graph = FakeSceneGraphWithRooms()
+    session = MemorySession(
+        scope=MemoryScope.SUBTASK_SEQUENCE,
+        scene_graph=scene_graph,
+        scene_graph_source=tsdf_source,
+    )
+    session.start_session(episode_id="ep-1", subtask_index=0)
+
+    session.update_from_observation(
+        _observation(
+            summary="entered room 4",
+            image_ids=["img-4"],
+            object_ids=["chair"],
+            room_id="4",
+        ),
+        action_type="explore_seed",
+        round_index=2,
+    )
+
+    assert scene_graph.synced_sources == [tsdf_source]
+    assert scene_graph.calls[0]["room_id"] == 4
+    assert scene_graph.visited_rooms == [4]
+
+
+def test_scene_graph_memory_persists_json(tmp_path):
+    from src.scene_graph_memory import SceneGraphMemory
+
+    graph = SceneGraphMemory()
+    graph.add_evidence(
+        decision_id=1,
+        action="explore_panorama",
+        outcome="panorama_complete",
+        room_id=4,
+        key_frame_ids=["img-1"],
+        objects_nearby=["chair"],
+        progress="chair visible",
+    )
+
+    out = tmp_path / "room_view_object_graph.json"
+    graph.persist_json(out)
+
+    assert out.exists()
+    text = out.read_text(encoding="utf-8")
+    assert '"num_evidence": 1' in text
+    assert '"chair"' in text

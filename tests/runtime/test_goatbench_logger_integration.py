@@ -154,3 +154,28 @@ def test_target_observed_false_when_category_absent():
     result.target_observed = bool(goal_cats & seen)
 
     assert result.target_observed is False
+
+
+def test_goatbench_runtime_output_dir_is_episode_scoped(tmp_path):
+    """Runtime artifacts should live beside the subtask event logs, not at the
+    global eval output root.
+    """
+    from run_goatbench_evaluation import _goatbench_runtime_output_dir
+
+    out = _goatbench_runtime_output_dir(tmp_path, "scene/with/slash", "ep:1")
+
+    assert str(out).endswith("two_tier_workflow/goatbench/scene_with_slash_ep_1")
+
+
+def test_persist_scene_graph_memory_writes_runtime_artifact(tmp_path):
+    from run_goatbench_evaluation import _persist_scene_graph_memory
+
+    graph = MagicMock()
+    graph.persist_json.return_value = str(tmp_path / "room_view_object_graph.json")
+
+    path = _persist_scene_graph_memory(graph, tmp_path)
+
+    assert path.endswith("room_view_object_graph.json")
+    graph.persist_json.assert_called_once_with(
+        tmp_path / "room_view_object_graph.json"
+    )
