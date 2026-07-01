@@ -188,3 +188,7 @@ cython_debug/
 .pypirc
 .omx/
 .worktrees/
+
+# Local agent/workspace artifacts
+.codebuddy/
+information.md
