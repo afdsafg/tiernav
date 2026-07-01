@@ -45,6 +45,20 @@ def planner_action_to_decision(action: Any) -> PlannerDecision:
     )
 
 
+def _strip_code_fences(text: str) -> str:
+    """Remove markdown code fences (```json ... ```) from VLM output."""
+    s = text.strip()
+    if s.startswith("```"):
+        # Drop opening fence line (```json or ```)
+        first_nl = s.find("\n")
+        if first_nl != -1:
+            s = s[first_nl + 1:]
+        # Drop closing fence
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[:-3]
+    return s
+
+
 def _call_vlm(messages: list[dict], **kwargs: Any) -> str:
     """Indirection so tests can monkeypatch the OpenAI-compatible transport.
 
@@ -140,7 +154,8 @@ class PlannerClient:
                 continue
 
             try:
-                parsed = _json.loads(raw.strip())
+                cleaned = _strip_code_fences(raw)
+                parsed = _json.loads(cleaned.strip())
             except _json.JSONDecodeError:
                 last_error_decision = PlannerDecision(
                     action_type="submit_answer",
