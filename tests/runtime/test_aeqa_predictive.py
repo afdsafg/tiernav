@@ -1,6 +1,7 @@
 from src.tiernav_runtime.aeqa_predictive import (
     AEQAFrontier,
     AEQAImage,
+    AEQAPredictiveController,
     AEQAVisualState,
     AEQAVisualStateBuilder,
     build_answer_messages,
@@ -10,6 +11,7 @@ from src.tiernav_runtime.aeqa_predictive import (
     parse_frontier_response,
     parse_retain_indices,
 )
+from src.tiernav_runtime.contracts import EpisodeState
 
 
 def test_build_content_interleaves_text_and_images():
@@ -187,3 +189,142 @@ def test_prompt_builders_skip_empty_image_payloads():
 
     assert not any("Ghost Frontier" in block.get("text", "") for block in explore_messages[1]["content"])
     assert any("No frontiers available" in block.get("text", "") for block in explore_messages[1]["content"])
+
+
+class ScriptedVLM:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.messages = []
+
+    def call_vlm(self, messages, **kwargs):
+        self.messages.append(messages)
+        return self.responses.pop(0)
+
+
+class RecordingAudit:
+    def __init__(self):
+        self.calls = []
+
+    def record_multimodal(self, **kwargs):
+        self.calls.append(kwargs)
+
+
+def _episode():
+    return EpisodeState(
+        episode_id="ep-1",
+        scene_id="scene-1",
+        task_name="aeqa",
+        task_mode="question_answering",
+        prompt="What is hanging on the oven handle?",
+    )
+
+
+def test_controller_submits_when_answerer_finds_answer():
+    controller = AEQAPredictiveController()
+    planner = ScriptedVLM(["Answer: a white towel (Evidence: Snapshot 0)"])
+    audit = RecordingAudit()
+    env = FakeVisualEnv()
+
+    decision = controller.decide(
+        episode=_episode(),
+        context_text="compiled text",
+        env=env,
+        planner=planner,
+        prompt_audit=audit,
+    )
+
+    assert decision.action_type == "submit_answer"
+    assert decision.arguments["answer"] == "a white towel"
+    assert decision.arguments["evidence_snapshot"] == 0
+    assert len(planner.messages) == 1
+    assert audit.calls[0]["label"] == "aeqa_answerer"
+
+
+def test_controller_explores_frontier_when_answerer_says_continue():
+    controller = AEQAPredictiveController()
+    planner = ScriptedVLM([
+        "Continue Exploration",
+        "The kitchen is likely beyond this opening.\nNext Step: Frontier 4",
+    ])
+    env = FakeVisualEnv()
+
+    decision = controller.decide(
+        episode=_episode(),
+        context_text="compiled text",
+        env=env,
+        planner=planner,
+    )
+
+    assert decision.action_type == "explore_frontier"
+    assert decision.arguments["frontier_id"] == "4"
+    assert len(planner.messages) == 2
+
+
+def test_controller_submits_unanswerable_when_no_frontier_and_no_answer():
+    class NoFrontierEnv:
+        def get_aeqa_visual_state(self, episode):
+            return {
+                "question": episode.prompt,
+                "current_step": 0,
+                "snapshots": [],
+                "frontiers": [],
+                "egocentric_views": [],
+                "memory_text": "",
+                "tool_feedback": "",
+            }
+
+    controller = AEQAPredictiveController()
+    planner = ScriptedVLM(["Continue Exploration"])
+
+    decision = controller.decide(
+        episode=_episode(),
+        context_text="compiled text",
+        env=NoFrontierEnv(),
+        planner=planner,
+    )
+
+    assert decision.action_type == "submit_answer"
+    assert decision.arguments["answer"] == "unanswerable"
+    assert decision.confidence == 0.0
+
+
+def test_controller_memory_cache_is_bounded():
+    controller = AEQAPredictiveController(max_memory_episodes=2)
+    ep1_memory = controller.memory_for("ep-1")
+    ep1_memory.step_summaries.append("old summary")
+
+    controller.memory_for("ep-2")
+    controller.memory_for("ep-3")
+
+    assert list(controller._memory_by_episode) == ["ep-2", "ep-3"]
+    assert controller.memory_for("ep-1") is not ep1_memory
+
+
+def test_controller_ignores_frontiers_without_image_payloads():
+    class EmptyImageFrontierEnv:
+        def get_aeqa_visual_state(self, episode):
+            return {
+                "question": episode.prompt,
+                "current_step": 0,
+                "snapshots": [],
+                "frontiers": [
+                    {"frontier_id": "ghost", "image_b64": "", "label": "Ghost Frontier"},
+                ],
+                "egocentric_views": [],
+                "memory_text": "",
+                "tool_feedback": "",
+            }
+
+    controller = AEQAPredictiveController()
+    planner = ScriptedVLM(["Continue Exploration"])
+
+    decision = controller.decide(
+        episode=_episode(),
+        context_text="compiled text",
+        env=EmptyImageFrontierEnv(),
+        planner=planner,
+    )
+
+    assert decision.action_type == "submit_answer"
+    assert decision.arguments["answer"] == "unanswerable"
+    assert len(planner.messages) == 1

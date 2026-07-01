@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from pydantic import Field
 
-from .contracts import RuntimeModel
+from .contracts import PlannerDecision, RuntimeModel
 
 
 class AEQAImage(RuntimeModel):
@@ -37,6 +37,16 @@ class AEQAVisualState(RuntimeModel):
 
 
 class AEQAPredictiveMemory(RuntimeModel):
+    """Lightweight Pred-EQA memory surface for the controller.
+
+    Task 6 reads `step_summaries` and records the last answerer/explorer raw
+    responses in `last_answerer_decision` / `last_explorer_decision`. The
+    prediction/pruning fields (`prediction_items`, `retained_snapshot_ids`,
+    `pruned_snapshot_ids`) are intentionally retained as the scaffolding for the
+    snapshot-pruning / predictive-memory lane planned for this file and its
+    tests; that lane is not wired into the controller path in Task 6.
+    """
+
     prediction_items: list[dict[str, str]] = Field(default_factory=list)
     retained_snapshot_ids: list[str] = Field(default_factory=list)
     pruned_snapshot_ids: list[str] = Field(default_factory=list)
@@ -64,6 +74,13 @@ def build_content(pairs: list[tuple[str, Optional[str]]]) -> list[dict]:
 
 
 def parse_retain_indices(response: str, max_count: int, prefix: str = "Retain Snapshots") -> list[int]:
+    """Parse snapshot-retention indices out of a planner response.
+
+    This supports the snapshot-pruning / predictive-memory lane planned for this
+    file: it parses which snapshot indices a retain/prune response should keep.
+    The first Task 6 controller path does not call it yet, but it is kept here
+    so the lane can be wired in without re-introducing parsing surface.
+    """
     if not response or max_count <= 0:
         return []
     lines = [line.strip() for line in response.splitlines() if prefix in line]
@@ -151,6 +168,15 @@ Instructions:
 """
 
 
+# Heuristic placeholder confidence values for the controller's PlannerDecision
+# outputs. These are NOT calibrated scores; they exist so downstream consumers
+# receive a consistent ordering signal (answer > explore > unanswerable) until a
+# calibrated confidence source is wired in.
+ANSWER_HEURISTIC_CONFIDENCE = 0.8
+EXPLORE_HEURISTIC_CONFIDENCE = 0.6
+UNANSWERABLE_CONFIDENCE = 0.0
+
+
 def build_answer_messages(state: AEQAVisualState) -> list[dict]:
     pairs: list[tuple[str, Optional[str]]] = [
         (f"Question: {state.question}\n", None),
@@ -212,3 +238,97 @@ def build_explore_messages(state: AEQAVisualState) -> list[dict]:
         {"role": "system", "content": EXPLORE_SYSTEM_PROMPT},
         {"role": "user", "content": build_content(pairs)},
     ]
+
+
+class AEQAPredictiveController:
+    """Pred-EQA style AEQA controller that returns runtime PlannerDecision objects."""
+
+    def __init__(
+        self,
+        builder: Optional[AEQAVisualStateBuilder] = None,
+        max_memory_episodes: int = 128,
+    ) -> None:
+        self.builder = builder or AEQAVisualStateBuilder()
+        # Bounded insertion-ordered cache: evicts the oldest episode memory once
+        # the cap is reached so long-running sessions do not grow unbounded.
+        self.max_memory_episodes = max(1, int(max_memory_episodes))
+        self._memory_by_episode: dict[str, AEQAPredictiveMemory] = {}
+
+    def memory_for(self, episode_id: str) -> AEQAPredictiveMemory:
+        existing = self._memory_by_episode.get(episode_id)
+        if existing is not None:
+            return existing
+        if len(self._memory_by_episode) >= self.max_memory_episodes:
+            # dict preserves insertion order; drop the oldest entry.
+            oldest = next(iter(self._memory_by_episode))
+            del self._memory_by_episode[oldest]
+        memory = AEQAPredictiveMemory()
+        self._memory_by_episode[episode_id] = memory
+        return memory
+
+    def decide(
+        self,
+        *,
+        episode: Any,
+        context_text: str,
+        env: Any,
+        planner: Any,
+        prompt_audit: Any = None,
+    ) -> PlannerDecision:
+        state = self.builder.build(episode, env)
+        memory = self.memory_for(str(getattr(episode, "episode_id", "")))
+        if memory.step_summaries:
+            state.memory_text = (state.memory_text + "\n" + "\n".join(memory.step_summaries)).strip()
+
+        answer_messages = build_answer_messages(state)
+        self._audit(prompt_audit, episode, "aeqa_answerer", answer_messages)
+        answer_raw = planner.call_vlm(answer_messages, max_tokens=1024, temperature=0.3)
+        parsed_answer = parse_answer_response(answer_raw)
+        memory.last_answerer_decision = answer_raw or ""
+
+        if parsed_answer["action"] == "answer" and parsed_answer["answer"]:
+            args: dict[str, Any] = {"answer": parsed_answer["answer"]}
+            if parsed_answer["evidence_snapshot"] is not None:
+                args["evidence_snapshot"] = parsed_answer["evidence_snapshot"]
+            return PlannerDecision(
+                action_type="submit_answer",
+                reasoning="AEQA answerer found sufficient visual evidence.",
+                confidence=ANSWER_HEURISTIC_CONFIDENCE,
+                arguments=args,
+            )
+
+        valid_frontier_ids = [
+            frontier.frontier_id for frontier in state.frontiers if frontier.image_b64
+        ]
+        if not valid_frontier_ids:
+            return PlannerDecision(
+                action_type="submit_answer",
+                reasoning="AEQA answerer could not answer and no frontier is available.",
+                confidence=UNANSWERABLE_CONFIDENCE,
+                arguments={"answer": "unanswerable"},
+            )
+
+        explore_messages = build_explore_messages(state)
+        self._audit(prompt_audit, episode, "aeqa_explorer", explore_messages)
+        explore_raw = planner.call_vlm(explore_messages, max_tokens=1024, temperature=0.3)
+        selected = parse_frontier_response(explore_raw, valid_frontier_ids)
+        memory.last_explorer_decision = explore_raw or ""
+
+        return PlannerDecision(
+            action_type="explore_frontier",
+            reasoning="AEQA explorer selected a frontier for more visual evidence.",
+            confidence=EXPLORE_HEURISTIC_CONFIDENCE,
+            arguments={"frontier_id": selected},
+        )
+
+    @staticmethod
+    def _audit(prompt_audit: Any, episode: Any, label: str, messages: list[dict]) -> None:
+        if prompt_audit is None or not hasattr(prompt_audit, "record_multimodal"):
+            return
+        prompt_audit.record_multimodal(
+            episode_id=str(getattr(episode, "episode_id", "")),
+            round_index=int(getattr(episode, "round_index", 0) or 0),
+            step_index=int(getattr(episode, "step_index", 0) or 0),
+            label=label,
+            messages=messages,
+        )
