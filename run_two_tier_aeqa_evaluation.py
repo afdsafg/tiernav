@@ -37,6 +37,7 @@ from ultralytics import SAM, YOLOWorld
 
 from src.tiernav_runtime.config import ProviderConfig
 from src.tiernav_runtime.contracts import PlannerDecision
+from src.tiernav_runtime.pose_utils import initial_pose_from_pts
 from src.const import INVALID_SCENE_ID
 
 # Runtime engine — only path after Task 9.  _run_aeqa_runtime uses the
@@ -82,16 +83,8 @@ def _run_aeqa_runtime(
         model_env="QWEN_PLANNER_MODEL",
     )
 
-    pts_array = getattr(start_pts, "tolist", None)
-    if pts_array is not None:
-        pts_list = pts_array()
-    else:
-        pts_list = list(start_pts) if start_pts is not None else [0.0, 0.0]
-    initial_pose = {
-        "x": float(pts_list[0]),
-        "y": float(pts_list[1]),
-        "theta": float(start_angle),
-    }
+    initial_pose = initial_pose_from_pts(start_pts, start_angle)
+    pts_list = [initial_pose["x"], initial_pose["y"], initial_pose["z"]]
 
     request = adapter.to_request(
         scene_id=scene_id,
@@ -171,7 +164,6 @@ def _run_aeqa_runtime(
         detection_model, sam_predictor,
         clip_model, clip_preprocess, clip_tokenizer,
     )
-    executor.set_state(pts_list, start_angle, 0)
 
     # 4. Build RuntimeEnvironmentService
     from logging import getLogger
@@ -199,16 +191,29 @@ def _run_aeqa_runtime(
     # 6. MemorySession (per-question independent)
     memory_session = MemorySession(scope=MemoryScope.PER_QUESTION)
 
-    # 7. Entrypoint with real services
+    # 7. AEQA predictive controller + tool registry
+    from src.tiernav_runtime.aeqa_predictive import AEQAPredictiveController
+    from src.tiernav_runtime.tools import build_aeqa_tool_registry
+
+    aeqa_tools = build_aeqa_tool_registry(
+        executor,
+        task_mode=request.task_mode.value,
+    )
+    aeqa_controller = AEQAPredictiveController()
+
+    # 8. Entrypoint with real services
     entrypoint = RuntimeEntrypoint.with_real_services(
         planner=planner,
         environment=env,
         rule=rule,
         executor=executor,
         memory_scope_adapter=memory_session,
+        task_mode=request.task_mode.value,
+        tools=aeqa_tools,
+        aeqa_controller=aeqa_controller,
     )
 
-    # 8. Session lifecycle
+    # 9. Session lifecycle
     env.start_session(episode_id=question_id, initial_pose=initial_pose)
     try:
         result = entrypoint.run(spec, request)
