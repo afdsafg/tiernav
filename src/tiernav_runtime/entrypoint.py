@@ -88,6 +88,8 @@ class RuntimeEntrypoint:
         memory_scope_adapter: MemorySession | None = None,
         policy: WorkflowPolicy | None = None,
         task_mode: str = "",
+        tools: ToolRegistry | None = None,
+        aeqa_controller: Any = None,
     ) -> "RuntimeEntrypoint":
         """Build an entrypoint backed by real production services.
 
@@ -95,16 +97,19 @@ class RuntimeEntrypoint:
         SuccessEvaluator, environment service, and optional MemorySession.
         The graph consumes these services through RuntimeServices.
         """
+        using_custom_tools = tools is not None
         services = RuntimeServices(
             planner=planner,
-            tools=build_real_tool_registry(executor, task_mode=task_mode),
+            tools=tools if tools is not None else build_real_tool_registry(executor, task_mode=task_mode),
             memory=memory_scope_adapter if memory_scope_adapter is not None else MemoryService(),
             policy=policy if policy is not None else WorkflowPolicy(),
             environment=environment,
             memory_session=memory_scope_adapter,
             success_evaluator=SuccessEvaluator(rule),
             rule=rule,
+            aeqa_controller=aeqa_controller,
         )
+        services.uses_custom_tools = using_custom_tools  # type: ignore[attr-defined]
         return cls(services)
 
     def run(self, spec: RunSpec, request: EpisodeRequest) -> EpisodeResult:
@@ -145,7 +150,10 @@ class RuntimeEntrypoint:
             # Register query_scene_memory lazily: build_real_tool_registry ran
             # at construction before scene_id was known, so the store was not
             # wired then. Register now if not already present.
-            if "query_scene_memory" not in self.services.tools.names():
+            if (
+                not getattr(self.services, "uses_custom_tools", False)
+                and "query_scene_memory" not in self.services.tools.names()
+            ):
                 from .tools import QuerySceneMemoryTool
 
                 self.services.tools.register(

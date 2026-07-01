@@ -14,8 +14,10 @@ import json
 import pytest
 
 from src.tiernav_runtime.contracts import (
+    BenchmarkRule,
     EpisodeRequest,
     EpisodeResult,
+    MemoryScope,
     PlannerDecision,
     RunSpec,
     TaskMode,
@@ -25,6 +27,7 @@ from src.tiernav_runtime.entrypoint import (
     episode_result_to_legacy_dict,
 )
 from src.tiernav_runtime.replay import replay_events
+from src.tiernav_runtime.tools import SubmitAnswerTool, ToolRegistry
 
 
 # ── Fakes ─────────────────────────────────────────────────────────────────
@@ -318,3 +321,63 @@ def test_run_skips_store_when_output_dir_empty(tmp_path):
         pass  # empty output_dir may fail on event-log path; that's fine here
     assert entrypoint.services.scene_memory_store is None
 
+
+# ── with_real_services injection (Task 9) ─────────────────────────────────
+
+
+def test_with_real_services_accepts_custom_tools_and_aeqa_controller():
+    class Planner:
+        def decide(self, prompt, **kwargs):
+            return PlannerDecision(action_type="submit_answer", arguments={"answer": "unused"})
+
+    class Controller:
+        pass
+
+    custom_tools = ToolRegistry()
+    custom_tools.register(SubmitAnswerTool(task_mode="question_answering"))
+    controller = Controller()
+    rule = BenchmarkRule(
+        success_distance_m=0.0,
+        memory_scope=MemoryScope.PER_QUESTION,
+        scoring_mode="aeqa",
+    )
+
+    entrypoint = RuntimeEntrypoint.with_real_services(
+        planner=Planner(),
+        environment=None,
+        rule=rule,
+        executor=None,
+        task_mode="question_answering",
+        tools=custom_tools,
+        aeqa_controller=controller,
+    )
+
+    assert entrypoint.services.tools is custom_tools
+    assert entrypoint.services.aeqa_controller is controller
+
+
+def test_with_real_services_preserves_custom_tool_set_during_run(tmp_path):
+    class Planner:
+        def decide(self, prompt, **kwargs):
+            return PlannerDecision(action_type="submit_answer", arguments={"answer": "chair"})
+
+    custom_tools = ToolRegistry()
+    custom_tools.register(SubmitAnswerTool(task_mode="question_answering"))
+    rule = BenchmarkRule(
+        success_distance_m=0.0,
+        memory_scope=MemoryScope.PER_QUESTION,
+        scoring_mode="aeqa",
+    )
+    entrypoint = RuntimeEntrypoint.with_real_services(
+        planner=Planner(),
+        environment=None,
+        rule=rule,
+        executor=None,
+        task_mode="question_answering",
+        tools=custom_tools,
+    )
+
+    result = entrypoint.run(_spec(str(tmp_path)), _request("ep-custom-tools"))
+
+    assert result.success is True
+    assert entrypoint.services.tools.names() == ["submit_answer"]
