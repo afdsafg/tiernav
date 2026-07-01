@@ -11,6 +11,7 @@ from src.tiernav_runtime.contracts import (
     EpisodeState,
     MemoryPack,
     Observation,
+    PlannerDecision,
 )
 
 
@@ -700,7 +701,7 @@ def test_detect_phase_explore_when_goal_not_visible():
     assert ContextCompiler._detect_phase(state, env=None) == "explore"
 
 
-def test_detect_phase_submit_after_arrived_outcome():
+def test_detect_phase_submit_after_arrived_at_goal_object():
     state = _base_state(
         round_index=3,
         prompt="Navigate to refrigerator",
@@ -710,7 +711,30 @@ def test_detect_phase_submit_after_arrived_outcome():
             raw={"outcome": "arrived"},
         ),
     )
+    # decision needs object_name matching goal to trigger submit
+    state.current_decision = PlannerDecision(
+        action_type="navigate_to_object",
+        arguments={"object_name": "refrigerator"},
+    )
     assert ContextCompiler._detect_phase(state, env=None) == "submit"
+
+
+def test_detect_phase_no_submit_when_arrived_at_non_goal_object():
+    # Navigated to a non-goal object and arrived — should NOT enter submit.
+    state = _base_state(
+        round_index=3,
+        prompt="Navigate to refrigerator",
+        current_decision={"action_type": "navigate_to_object"},
+        last_observation=Observation(
+            object_ids=["chair"],
+            raw={"outcome": "arrived"},
+        ),
+    )
+    state.current_decision = PlannerDecision(
+        action_type="navigate_to_object",
+        arguments={"object_name": "chair"},
+    )
+    assert ContextCompiler._detect_phase(state, env=None) == "explore"
 
 
 def test_detect_phase_navigate_takes_priority_over_explore_but_not_submit():

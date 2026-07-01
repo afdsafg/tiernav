@@ -151,7 +151,7 @@ class ContextCompiler:
         no LLM, no ``distance_to_goal`` (ground truth). ``max_rounds`` default
         matches :class:`RunSpec.max_rounds`.
         """
-        # 1. Submit: budget almost exhausted or just arrived at target.
+        # 1. Submit: budget almost exhausted or just arrived at the GOAL object.
         if state.round_index >= max_rounds - 2:
             return "submit"
         decision = state.current_decision
@@ -160,7 +160,12 @@ class ContextCompiler:
             and decision.action_type == "navigate_to_object"
             and "arrived" in str(state.last_observation.raw.get("outcome", ""))
         ):
-            return "submit"
+            # Only enter submit if we navigated to the goal object itself,
+            # not just any object we happened to navigate toward.
+            nav_target = str(decision.arguments.get("object_name", "")).lower()
+            goal_kw = ContextCompiler._extract_goal_keyword(state.prompt)
+            if goal_kw and nav_target and goal_kw in nav_target:
+                return "submit"
         # 2. Navigate: goal object visible in current observation or targets.
         if ContextCompiler._goal_object_visible(state, env):
             return "navigate"
