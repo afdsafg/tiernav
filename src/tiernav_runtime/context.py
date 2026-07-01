@@ -13,7 +13,7 @@ import hashlib
 from typing import Any
 
 from .contracts import ContextSection, EpisodeState
-from .prompts.task_instruction import STRATEGY_SKELETON, strategy_for_phase
+from .prompts.task_instruction import skeleton_for_task, strategy_for_phase_task
 
 
 def _hash(content: str) -> str:
@@ -218,6 +218,8 @@ class ContextCompiler:
 
     @staticmethod
     def _render_task_instruction(state: EpisodeState, phase: str = "explore") -> str:
+        skeleton = skeleton_for_task(state.task_mode)
+        phase_strategy = strategy_for_phase_task(phase, state.task_mode)
         lines = [
             f"episode_id: {state.episode_id}",
             f"scene_id: {state.scene_id}",
@@ -225,9 +227,9 @@ class ContextCompiler:
             f"task_mode: {state.task_mode.value}",
             f"prompt: {state.prompt}",
             "",
-            STRATEGY_SKELETON,
+            skeleton,
             "",
-            strategy_for_phase(phase),
+            phase_strategy,
         ]
         return "\n".join(lines)
 

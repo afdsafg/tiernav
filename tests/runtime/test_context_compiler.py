@@ -18,9 +18,9 @@ def _base_state(**overrides) -> EpisodeState:
     kwargs = dict(
         episode_id="ep-1",
         scene_id="scene-1",
-        task_name="aeqa",
-        task_mode="question_answering",
-        prompt="Where is the lamp?",
+        task_name="goatbench",
+        task_mode="goal_navigation",
+        prompt="Navigate to refrigerator",
         round_index=1,
         step_index=3,
     )
@@ -482,7 +482,9 @@ def test_scoring_only_goal_object_ids_never_leak_into_prompt():
 def test_task_instruction_renders_only_planner_safe_fields():
     """task_instruction section must render only: episode_id, scene_id,
     task_name, task_mode, prompt — never goal_metadata / scoring ids."""
-    state = _base_state(prompt="Where is the lamp?")
+    state = _base_state(
+        task_name="aeqa", task_mode="question_answering", prompt="Where is the lamp?"
+    )
     compiler = ContextCompiler()
 
     sections = compiler.compile(state, action_schema=SCHEMA)
@@ -819,6 +821,35 @@ def test_compile_defaults_to_explore_phase_for_non_navigate_prompt():
     sections = compiler.compile(state, action_schema=SCHEMA)
     task = {s.name: s for s in sections}["task_instruction"]
     assert "探索" in task.content
+
+
+def test_aeqa_skeleton_omits_navigation_arrival_requirement():
+    """task_mode=question_answering -> skeleton must NOT say 'within 1m' or
+    'navigate_to_object once target visible'."""
+    state = _base_state(
+        task_name="aeqa",
+        task_mode="question_answering",
+        prompt="What is above the wooden table?",
+    )
+    content = ContextCompiler._render_task_instruction(state, phase="explore")
+    assert "within 1m" not in content
+    assert "navigate_to_object once target visible" not in content
+    assert "question-answering planner" in content
+    assert "submit_answer with answer" in content
+
+
+def test_goatbench_skeleton_contains_navigation_arrival_requirement():
+    """task_mode=goal_navigation -> skeleton MUST say 'within 1m' and
+    'navigate_to_object once target visible'."""
+    state = _base_state(
+        task_name="goatbench",
+        task_mode="goal_navigation",
+        prompt="Navigate to refrigerator",
+    )
+    content = ContextCompiler._render_task_instruction(state, phase="explore")
+    assert "within 1m" in content
+    assert "navigate_to_object once target visible" in content
+    assert "navigation planner" in content
 
 
 # --- Phase 3: compact state re-injection verification ---------------------
