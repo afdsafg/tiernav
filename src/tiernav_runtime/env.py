@@ -308,21 +308,45 @@ class RuntimeEnvironmentService:
         if image is None:
             return ""
         if isinstance(image, str):
+            image = image.strip()
             if image.startswith("data:image/") and "base64," in image:
-                return image.split("base64,", 1)[1]
-            return image
+                image = image.split("base64,", 1)[1]
+            try:
+                import base64
+                import io
+                from PIL import Image
+
+                with Image.open(io.BytesIO(base64.b64decode(image))) as img:
+                    return RuntimeEnvironmentService._pil_image_to_b64(img)
+            except Exception:
+                return image
         try:
-            from src.agent_image_utils import numpy_to_base64
             import numpy as np
+            from PIL import Image
 
             arr = np.asarray(image)
             if arr.ndim < 2:
                 return ""
             if arr.ndim == 3 and arr.shape[-1] > 3:
                 arr = arr[..., :3]
-            return numpy_to_base64(arr, fmt="PNG")
+            if arr.dtype != np.uint8:
+                arr = np.clip(arr * 255 if arr.max() <= 1.0 else arr, 0, 255).astype(np.uint8)
+            return RuntimeEnvironmentService._pil_image_to_b64(Image.fromarray(arr))
         except Exception:
             return ""
+
+    @staticmethod
+    def _pil_image_to_b64(image: Any) -> str:
+        import base64
+        import io
+        from PIL import Image
+
+        resampling = getattr(Image, "LANCZOS", Image.BICUBIC)
+
+        img = image.convert("RGB").resize((360, 360), resampling)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
 
     def _build_aeqa_snapshots(self) -> list[dict[str, str]]:
         scene = self.scene

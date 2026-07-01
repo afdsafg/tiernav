@@ -1,4 +1,8 @@
+import base64
+import io
+
 import numpy as np
+from PIL import Image
 
 from src.tiernav_runtime.contracts import EpisodeState, Observation
 from src.tiernav_runtime.env import RuntimeEnvironmentService
@@ -59,6 +63,18 @@ class PanoramaExecutor:
         )()
 
 
+def _image_b64(width: int, height: int, value: int = 96) -> str:
+    img = Image.fromarray(np.full((height, width, 3), value, dtype=np.uint8))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _decoded_size(image_b64: str) -> tuple[int, int]:
+    with Image.open(io.BytesIO(base64.b64decode(image_b64))) as img:
+        return img.size
+
+
 def test_environment_builds_real_aeqa_visual_state_from_scene_and_tsdf():
     env = RuntimeEnvironmentService.for_aeqa(
         scene=FakeScene(),
@@ -90,6 +106,29 @@ def test_environment_builds_real_aeqa_visual_state_from_scene_and_tsdf():
     assert state["frontiers"][0]["image_b64"]
     assert state["egocentric_views"][0]["image_b64"] == "current-view-b64"
     assert "Arrived near the kitchen frontier." in state["tool_feedback"]
+
+
+def test_environment_visual_state_resizes_uploaded_images_to_360_square():
+    current_view_b64 = _image_b64(width=19, height=11, value=192)
+    env = RuntimeEnvironmentService.for_aeqa(
+        scene=FakeScene(),
+        tsdf_planner=FakeTSDF(),
+        executor=None,
+    )
+    episode = EpisodeState(
+        episode_id="ep-visual-360",
+        scene_id="scene-1",
+        task_name="aeqa",
+        task_mode="question_answering",
+        prompt="What is hanging on the oven handle?",
+        last_observation=Observation(raw={"current_image_b64": current_view_b64}),
+    )
+
+    state = env.get_aeqa_visual_state(episode)
+
+    assert _decoded_size(state["snapshots"][0]["image_b64"]) == (360, 360)
+    assert _decoded_size(state["frontiers"][0]["image_b64"]) == (360, 360)
+    assert _decoded_size(state["egocentric_views"][0]["image_b64"]) == (360, 360)
 
 
 def test_environment_initial_visual_context_seeds_frontier_map():
