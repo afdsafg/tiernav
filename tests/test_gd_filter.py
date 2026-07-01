@@ -53,7 +53,7 @@ class TestGDQualityFilter:
     def test_score_too_low(self):
         """Low confidence detection should be rejected."""
         bbox = np.array([100, 100, 200, 200])
-        result, reason = gd_quality_filter(bbox, score=0.25, image_shape=(1280, 1280))
+        result, reason = gd_quality_filter(bbox, score=0.05, image_shape=(1280, 1280))
         assert result is None
         assert reason == "score_too_low"
 

@@ -204,6 +204,7 @@ class ContextSection(RuntimeModel):
     name: str
     content: str
     cacheable: bool
+    cache_break: bool = False
     token_estimate: NonNegativeInt = 0
     content_hash: str = ""
 
@@ -223,6 +224,13 @@ class EpisodeState(RuntimeModel):
     current_decision: Optional[PlannerDecision] = None
     last_observation: Observation = Field(default_factory=Observation)
     memory_pack: Optional[MemoryPack] = None
+    # Phase 2: model-driven recall result (manifest + recalled details).
+    # Empty at subtask start, populated by compile_context_node auto-recall.
+    # Not cacheable — changes when recall runs.
+    recalled_memory: str = ""
+    # Phase 2: compact summary of early rounds, populated when round_index >= 5.
+    # Empty until first compact trigger. Replaces early trace in prompt.
+    compact_summary: str = ""
     context_sections: list[ContextSection] = Field(default_factory=list)
     terminal: bool = False
     success: bool = False

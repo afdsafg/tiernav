@@ -13,6 +13,7 @@ import hashlib
 from typing import Any
 
 from .contracts import ContextSection, EpisodeState
+from .prompts.task_instruction import STRATEGY_SKELETON, strategy_for_phase
 
 
 def _hash(content: str) -> str:
@@ -36,11 +37,12 @@ def _estimate_tokens(content: str) -> int:
     return max(1, len(content.split()))
 
 
-def _section(name: str, content: str, cacheable: bool) -> ContextSection:
+def _section(name: str, content: str, cacheable: bool, cache_break: bool = False) -> ContextSection:
     return ContextSection(
         name=name,
         content=content,
         cacheable=cacheable,
+        cache_break=cache_break,
         token_estimate=_estimate_tokens(content),
         content_hash=_hash(content),
     )
@@ -107,12 +109,15 @@ class ContextCompiler:
                 f"policy_hint must be str, got {type(policy_hint).__name__}: "
                 f"{policy_hint!r}"
             )
-        task_instruction = self._render_task_instruction(state)
+        phase = self._detect_phase(state, env)
+        task_instruction = self._render_task_instruction(
+            state, phase
+        )
         memory_text = self._render_memory(state, include_memory)
-        task_state = self._render_task_state(state)
+        task_state = self._render_task_state(state, phase)
         recent_trace = self._render_recent_trace(state)
         observation_text = self._render_observation(state)
-        scene_graph_text = self._render_scene_graph_memory(env, include_memory)
+        scene_graph_text = self._render_scene_graph_memory(state, env, include_memory)
         targets_text = self._render_available_targets(env)
         tool_feedback = self._render_tool_feedback(state)
         policy_text = policy_hint
@@ -121,7 +126,7 @@ class ContextCompiler:
             _section("task_instruction", task_instruction, cacheable=True),
             _section("action_schema", action_schema, cacheable=True),
             _section("memory_index", memory_text, cacheable=True),
-            _section("task_state", task_state, cacheable=False),
+            _section("task_state", task_state, cacheable=False, cache_break=True),
             _section("recent_trace", recent_trace, cacheable=False),
             _section("current_observation", observation_text, cacheable=False),
             _section("scene_graph_memory", scene_graph_text, cacheable=False),
@@ -140,7 +145,79 @@ class ContextCompiler:
         return render_prompt(sections)
 
     @staticmethod
-    def _render_task_instruction(state: EpisodeState) -> str:
+    def _detect_phase(state: EpisodeState, env: Any, max_rounds: int = 10) -> str:
+        """Rule-based phase detection: submit > navigate > explore.
+
+        Returns ``"explore"`` | ``"navigate"`` | ``"submit"``. Pure rules —
+        no LLM, no ``distance_to_goal`` (ground truth). ``max_rounds`` default
+        matches :class:`RunSpec.max_rounds`.
+        """
+        # 1. Submit: budget almost exhausted or just arrived at the GOAL object.
+        if state.round_index >= max_rounds - 2:
+            return "submit"
+        # Check the LAST executed action (in last_observation.raw), not
+        # current_decision — current_decision is the upcoming round's plan
+        # (already set by plan_node), not what was just executed.
+        raw = state.last_observation.raw or {}
+        last_action = str(raw.get("action_type", "")).lower()
+        last_outcome = str(raw.get("outcome", "")).lower()
+        if (
+            last_action == "navigate_to_object"
+            and "arrived" in last_outcome
+        ):
+            # Only enter submit if we navigated to the goal object itself,
+            # not just any object. Check the progress text for the goal keyword.
+            progress = str(raw.get("progress", "")).lower()
+            goal_kw = ContextCompiler._extract_goal_keyword(state.prompt)
+            if goal_kw and goal_kw in progress:
+                return "submit"
+        # 2. Navigate: goal object visible in current observation or targets.
+        if ContextCompiler._goal_object_visible(state, env):
+            return "navigate"
+        # 3. Default: explore.
+        return "explore"
+
+    @staticmethod
+    def _goal_object_visible(state: EpisodeState, env: Any) -> bool:
+        """Check if the goal object (from prompt) is visible in observation or targets."""
+        goal_keyword = ContextCompiler._extract_goal_keyword(state.prompt)
+        if not goal_keyword:
+            return False
+        objects_lower = [o.lower() for o in state.last_observation.object_ids]
+        if goal_keyword in objects_lower:
+            return True
+        if env is not None:
+            scene = getattr(env, "scene", None)
+            if scene is not None:
+                scene_objs = getattr(scene, "objects", None)
+                if scene_objs:
+                    for obj in scene_objs.values():
+                        if isinstance(obj, dict):
+                            cat = str(obj.get("class_name", "")).lower()
+                            if goal_keyword in cat:
+                                return True
+        return False
+
+    @staticmethod
+    def _extract_goal_keyword(prompt: str) -> str:
+        """Extract the goal object keyword from a prompt like 'Navigate to refrigerator'.
+
+        Returns lowercased keyword, or ``""`` if extraction fails (safe default
+        -> explore phase).
+        """
+        if not prompt:
+            return ""
+        lower = prompt.lower().strip()
+        if "navigate to " in lower:
+            after = lower.split("navigate to ", 1)[1].strip()
+            for sep in [",", ".", ";", "\n"]:
+                if sep in after:
+                    after = after.split(sep, 1)[0].strip()
+            return after
+        return ""
+
+    @staticmethod
+    def _render_task_instruction(state: EpisodeState, phase: str = "explore") -> str:
         lines = [
             f"episode_id: {state.episode_id}",
             f"scene_id: {state.scene_id}",
@@ -148,17 +225,9 @@ class ContextCompiler:
             f"task_mode: {state.task_mode.value}",
             f"prompt: {state.prompt}",
             "",
-            "You are a navigation planner. Output ONLY a JSON object on a single line, no markdown fences, no prose.",
-            "Required fields: action_type (one of the available tools), reason (string), expected (string).",
-            "Optional fields: object_name (str), seed_id (str), frontier_id (str), view_idx (int), answer (str, required for submit_answer).",
-            "Pick frontier_id / seed_id / object_name from the available_targets section below. Do NOT invent ids.",
-            "Do not call explore_frontier when frontiers is none or absent.",
-            "Do not call explore_seed when seeds is none or absent.",
-            "Do not call navigate_to_object when objects is none or absent.",
-            "Strategy: explore_panorama to observe -> explore_frontier/explore_seed to move -> navigate_to_object once target visible -> submit_answer when done.",
-            'Example: {"action_type": "explore_panorama", "reason": "Need to observe surroundings", "expected": "Get room layout"}',
-            'For target tools, copy the exact frontier_id, seed_id, or object_name from available_targets.',
-            'Example: {"action_type": "submit_answer", "reason": "Final answer", "expected": "Done", "answer": "<your answer here>"}',
+            STRATEGY_SKELETON,
+            "",
+            strategy_for_phase(phase),
         ]
         return "\n".join(lines)
 
@@ -172,7 +241,7 @@ class ContextCompiler:
         return _format_memory_pack(pack)
 
     @staticmethod
-    def _render_task_state(state: EpisodeState) -> str:
+    def _render_task_state(state: EpisodeState, phase: str = "explore") -> str:
         lines = [
             "continuous_context: enabled",
             f"task_mode: {state.task_mode.value}",
@@ -183,8 +252,18 @@ class ContextCompiler:
         ]
         if state.failure_type:
             lines.append(f"last_failure_type: {state.failure_type}")
-        if state.distance_to_goal is not None:
-            lines.append(f"distance_to_goal_m: {state.distance_to_goal:.3f}")
+        # distance_to_goal is intentionally NOT rendered here — it is
+        # ground truth (computed from the GT goal_pose) and leaking it
+        # into the planner prompt is cheating. It stays on EpisodeState
+        # for SuccessEvaluator only.
+        # Skip compact_summary in submit phase: it was frozen at round 5
+        # and is likely stale (e.g. says "objects found: none" after we
+        # already found and navigated to the goal). The submit strategy
+        # block in task_instruction already tells the planner to submit.
+        if state.compact_summary and phase != "submit":
+            lines.append("")
+            lines.append("compact_summary:")
+            lines.append(state.compact_summary)
         return "\n".join(lines)
 
     @staticmethod
@@ -204,19 +283,25 @@ class ContextCompiler:
         return "\n".join(parts)
 
     @staticmethod
-    def _render_scene_graph_memory(env: Any, include_memory: bool) -> str:
+    def _render_scene_graph_memory(state: EpisodeState, env: Any, include_memory: bool) -> str:
         if not include_memory or env is None:
             return ""
         graph = getattr(env, "scene_graph_memory", None)
         if graph is None:
             session = getattr(env, "memory_session", None)
             graph = getattr(session, "scene_graph", None) if session is not None else None
-        if graph is None or not hasattr(graph, "get_summary_for_planner"):
+        if graph is None or not hasattr(graph, "get_manifest"):
             return ""
         try:
-            return str(graph.get_summary_for_planner())
+            manifest = str(graph.get_manifest())
         except Exception:
             return ""
+        parts = [manifest]
+        if state.recalled_memory:
+            parts.append("")
+            parts.append("recalled_details:")
+            parts.append(state.recalled_memory)
+        return "\n".join(parts)
 
     @staticmethod
     def _render_tool_feedback(state: EpisodeState) -> str:

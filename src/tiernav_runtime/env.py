@@ -63,6 +63,7 @@ class RuntimeEnvironmentService:
         self._current_pose: dict[str, float] = {}
         self._path_length: float = 0.0
         self._goal_pose: Optional[dict[str, float]] = None
+        self._goal_poses: list[dict[str, float]] = []
         self._episode_id: Optional[str] = None
         self._is_torn_down: bool = False
 
@@ -86,14 +87,24 @@ class RuntimeEnvironmentService:
 
     def set_goal_pose(self, pose: Optional[dict[str, float]]) -> None:
         """Set the goal pose for distance computation.
-        
+
         Set during session start from EpisodeRequest.goal_metadata. Tests
         may set a fake goal_pose directly.
         """
         self._goal_pose = dict(pose) if pose is not None else None
+        self._goal_poses = [self._goal_pose] if self._goal_pose is not None else []
+
+    def set_goal_poses(self, poses: list[dict[str, float]]) -> None:
+        """Set multiple goal viewpoints for MultiGoal distance computation.
+
+        GOATBench objects have multiple view_points; success is measured as
+        the shortest distance to ANY of them. Replaces the single-pose path.
+        """
+        self._goal_poses = [dict(p) for p in poses] if poses else []
+        self._goal_pose = self._goal_poses[0] if self._goal_poses else None
 
     def distance_to_goal(self) -> Optional[float]:
-        """Euclidean floor-plane distance from current_pose to goal_pose.
+        """Euclidean floor-plane distance to the NEAREST goal viewpoint.
 
         Habitat coords are [x, y, z] with y up; the floor plane is x, z.
         Returns None when either pose is missing, so the evaluator can
@@ -101,11 +112,18 @@ class RuntimeEnvironmentService:
         """
         if not self._current_pose:
             return None
-        if self._goal_pose is None:
+        if not self._goal_poses:
             return None
-        dx = self._current_pose.get("x", 0.0) - self._goal_pose.get("x", 0.0)
-        dz = self._current_pose.get("z", 0.0) - self._goal_pose.get("z", 0.0)
-        return (dx * dx + dz * dz) ** 0.5
+        cx = self._current_pose.get("x", 0.0)
+        cz = self._current_pose.get("z", 0.0)
+        best = None
+        for gp in self._goal_poses:
+            dx = cx - gp.get("x", 0.0)
+            dz = cz - gp.get("z", 0.0)
+            d = (dx * dx + dz * dz) ** 0.5
+            if best is None or d < best:
+                best = d
+        return best
 
     @property
     def is_torn_down(self) -> bool:

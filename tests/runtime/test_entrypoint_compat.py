@@ -241,3 +241,80 @@ def test_with_environment_services_attaches_env_to_services():
     entrypoint = RuntimeEntrypoint.with_environment_services(planner, env)
 
     assert entrypoint.services.environment is env
+
+
+# ── Phase 2: SceneMemoryStore wiring in run() ────────────────────────────
+
+
+def test_run_creates_scene_memory_store_when_output_dir_set(tmp_path):
+    """run() with output_dir must create a SceneMemoryStore and persist on disk.
+
+    Fake-services path has no memory_session, so sediment is a no-op, but the
+    store is still created (and its JSON file materializes once sediment runs
+    against a session-backed services bundle). Here we just verify the store
+    is non-None during invoke by checking the on-disk artifact after a
+    successful episode using a MemorySession-wired entrypoint.
+    """
+    import os
+
+    from src.tiernav_runtime.contracts import MemoryScope
+    from src.tiernav_runtime.entrypoint import RuntimeEntrypoint
+    from src.tiernav_runtime.memory import (
+        MemoryService,
+        MemorySession,
+        ObjectNode,
+        RoomNode,
+    )
+
+    planner = FakePlanner(
+        [PlannerDecision(action_type="submit_answer", arguments={"answer": "chair"})]
+    )
+    # Build via with_fake_services then inject a MemorySession so sediment has
+    # something to read. This mirrors how production wires memory_session.
+    entrypoint = RuntimeEntrypoint.with_fake_services(planner)
+    session = MemorySession(scope=MemoryScope.PER_QUESTION)
+    entrypoint.services.memory_session = session
+
+    result = entrypoint.run(_spec(str(tmp_path)), _request())
+
+    assert result.success is True
+    # scene_memory/<scene_id>.json should exist after sediment ran.
+    scene_mem_path = tmp_path / "scene_memory" / "scene-1.json"
+    assert os.path.exists(scene_mem_path), "scene_memory JSON must be persisted"
+
+    # Store is cleared in finally — verify it does not leak across episodes.
+    assert entrypoint.services.scene_memory_store is None
+
+
+def test_run_clears_scene_memory_store_in_finally(tmp_path):
+    """Even on a successful run, scene_memory_store is cleared in finally."""
+    from src.tiernav_runtime.entrypoint import RuntimeEntrypoint
+
+    planner = FakePlanner(
+        [PlannerDecision(action_type="submit_answer", arguments={"answer": "chair"})]
+    )
+    entrypoint = RuntimeEntrypoint.with_fake_services(planner)
+
+    entrypoint.run(_spec(str(tmp_path)), _request())
+
+    assert entrypoint.services.scene_memory_store is None
+
+
+def test_run_skips_store_when_output_dir_empty(tmp_path):
+    """When output_dir is empty/falsy, no store is created."""
+    from src.tiernav_runtime.entrypoint import RuntimeEntrypoint
+
+    planner = FakePlanner(
+        [PlannerDecision(action_type="submit_answer", arguments={"answer": "chair"})]
+    )
+    entrypoint = RuntimeEntrypoint.with_fake_services(planner)
+    spec = _spec("")  # empty output_dir
+
+    # run() with empty output_dir should not create the recorder path either;
+    # just verify store stays None and run does not raise.
+    try:
+        entrypoint.run(spec, _request())
+    except (FileExistsError, OSError):
+        pass  # empty output_dir may fail on event-log path; that's fine here
+    assert entrypoint.services.scene_memory_store is None
+

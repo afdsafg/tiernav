@@ -443,3 +443,29 @@ class SceneGraphMemory:
                 f"Rejected rooms: {', '.join(str(r.room_id) + '(' + r.rejection_reason[:40] + ')' for r in rejected)}"
             )
         return "\n".join(lines)
+
+    def get_manifest(self) -> str:
+        """Lightweight structural manifest (replaces full dump in prompt).
+
+        Lists room ids by status, object category counts, and evidence entry
+        count. Keeps the prompt compact; details are recalled on demand via
+        SceneMemoryStore.recall + get_node_detail.
+        """
+        room_parts: list[str] = []
+        for room in sorted(self.rooms.values(), key=lambda r: r.room_id):
+            room_parts.append(
+                str(room.room_id) + "(" + room.status + ")"
+            )
+        obj_counts: dict[str, int] = {}
+        for obj in self.objects.values():
+            if obj.rejected:
+                continue
+            obj_counts[obj.category] = obj_counts.get(obj.category, 0) + 1
+        obj_parts = [
+            cat + " x" + str(n) for cat, n in sorted(obj_counts.items())
+        ]
+        parts: list[str] = []
+        parts.append("rooms: " + (", ".join(room_parts) if room_parts else "none"))
+        parts.append("objects: " + (", ".join(obj_parts) if obj_parts else "none"))
+        parts.append("evidence: " + str(len(self.evidence)) + " entries")
+        return "\n".join(parts)

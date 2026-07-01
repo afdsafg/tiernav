@@ -5,6 +5,7 @@ invoke in tests and replay.
 """
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
@@ -31,28 +32,39 @@ class RuntimeTool(ABC):
 
 
 class SubmitAnswerTool(RuntimeTool):
-    """Terminal tool that records the planner's final answer."""
+    """Terminal tool that records the planner's final answer or arrival confirmation.
+
+    For ``question_answering`` mode: ``answer`` is required (the text answer).
+    For ``goal_navigation`` mode (GOATBench): ``answer`` is optional — submit
+    is a confirmation of physical arrival at the goal, not an answer. The
+    success evaluator checks ``distance_to_goal`` independently.
+    """
 
     name: ClassVar[str] = "submit_answer"
     terminal: ClassVar[bool] = True
-    arg_schema: ClassVar[str] = "required: answer (str)"
+    arg_schema: ClassVar[str] = "answer (str, required for QA; optional for goal_navigation)"
+
+    def __init__(self, task_mode: str = "") -> None:
+        self._task_mode = task_mode
 
     def run(self, call: ToolCall) -> ToolResult:
         answer = str(call.arguments.get("answer", "") or "")
-        if not answer:
+        is_qa = self._task_mode == "question_answering"
+        if is_qa and not answer:
             return ToolResult(
                 call_id=call.call_id,
                 action_type=call.action_type,
                 ok=False,
                 terminal=True,
-                error="submit_answer requires an answer",
+                error="submit_answer requires an answer for question_answering mode",
             )
+        summary = f"submitted answer: {answer}" if answer else "submitted: goal reached"
         return ToolResult(
             call_id=call.call_id,
             action_type=call.action_type,
             ok=True,
             terminal=True,
-            observation=Observation(summary=f"submitted answer: {answer}"),
+            observation=Observation(summary=summary),
         )
 
 
@@ -141,7 +153,7 @@ class ToolRegistry:
             tool = NoopNavigationTool()
             tool.name = action_type  # type: ignore[misc]
             registry.register(tool)
-        registry.register(SubmitAnswerTool())
+        registry.register(SubmitAnswerTool())  # task_mode="" → answer optional
         return registry
 
 
@@ -334,7 +346,88 @@ class ExploreFrontierTool(_ExecutorNavigationTool):
         return self._executor.explore_frontier(frontier_id)
 
 
-def build_real_tool_registry(executor: _ExecutorLike) -> ToolRegistry:
+class QuerySceneMemoryTool(RuntimeTool):
+    """Planner-callable recall tool for scene memory.
+
+    Reuses the planner model to decide which memory nodes to extract based
+    on the query, then returns their details as observation summary text.
+    Non-terminal: the planner calls this to refresh context mid-episode.
+    """
+
+    name: ClassVar[str] = "query_scene_memory"
+    terminal: ClassVar[bool] = False
+    arg_schema: ClassVar[str] = "required: query (str) — what to recall from scene memory"
+
+    def __init__(self, scene_memory_store: Any, planner_client: Any) -> None:
+        self._store = scene_memory_store
+        self._planner = planner_client
+
+    def run(self, call: ToolCall) -> ToolResult:
+        query = str(call.arguments.get("query", "") or "")
+        if not query:
+            return ToolResult(
+                call_id=call.call_id,
+                action_type=call.action_type,
+                ok=False,
+                terminal=False,
+                error="query_scene_memory requires a 'query' argument",
+            )
+        try:
+            manifest = self._store.get_manifest()
+            # current_room unknown from tool context — pass empty string
+            nodes = self._store.recall(query, manifest, "", self._planner)
+        except Exception as exc:
+            return ToolResult(
+                call_id=call.call_id,
+                action_type=call.action_type,
+                ok=False,
+                terminal=False,
+                error="query_scene_memory recall failed: " + str(exc),
+            )
+        if not nodes:
+            return ToolResult(
+                call_id=call.call_id,
+                action_type=call.action_type,
+                ok=True,
+                terminal=False,
+                observation=Observation(summary="no relevant scene memory found"),
+            )
+        # Fetch details for each recalled node
+        detail_lines = []
+        for node in nodes:
+            detail = self._store.get_node_detail(node["type"], node["id"])
+            if detail:
+                detail_lines.append(
+                    "- " + node["type"] + " " + node["id"]
+                    + " (" + node.get("reason", "") + "): "
+                    + json.dumps(detail, ensure_ascii=False)
+                )
+        summary = "\n".join(detail_lines) if detail_lines else "recalled nodes had no details"
+        return ToolResult(
+            call_id=call.call_id,
+            action_type=call.action_type,
+            ok=True,
+            terminal=False,
+            observation=Observation(summary=summary),
+        )
+
+
+def register_query_scene_memory(
+    registry: ToolRegistry,
+    scene_memory_store: Any,
+    planner_client: Any,
+) -> None:
+    """Register the query_scene_memory tool when a SceneMemoryStore is available."""
+    if scene_memory_store is not None:
+        registry.register(QuerySceneMemoryTool(scene_memory_store, planner_client))
+
+
+def build_real_tool_registry(
+    executor: _ExecutorLike,
+    scene_memory_store: Any = None,
+    planner_client: Any = None,
+    task_mode: str = "",
+) -> ToolRegistry:
     """Return a production :class:`ToolRegistry` backed by ``executor``.
 
     Wraps the four ``Executor`` navigation methods and reuses
@@ -342,11 +435,18 @@ def build_real_tool_registry(executor: _ExecutorLike) -> ToolRegistry:
     register ``fork_subagent`` or ``pixel_navigate``. Navigation tool errors
     are caught and surfaced as ``ToolResult(ok=False)``; ``submit_answer``
     keeps its existing validation behavior.
+
+    When ``scene_memory_store`` and ``planner_client`` are both provided,
+    also registers :class:`QuerySceneMemoryTool` so the planner can recall
+    scene memory mid-episode. Both default to ``None`` for backward
+    compatibility.
     """
     registry = ToolRegistry()
     registry.register(ExplorePanoramaTool(executor))
     registry.register(NavigateToObjectTool(executor))
     registry.register(ExploreSeedTool(executor))
     registry.register(ExploreFrontierTool(executor))
-    registry.register(SubmitAnswerTool())
+    registry.register(SubmitAnswerTool(task_mode=task_mode))
+    if scene_memory_store is not None and planner_client is not None:
+        registry.register(QuerySceneMemoryTool(scene_memory_store, planner_client))
     return registry

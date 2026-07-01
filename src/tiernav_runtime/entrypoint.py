@@ -25,7 +25,7 @@ from .events import make_event
 from .graph import RuntimeServices, build_runtime_graph
 from .memory import MemoryService, MemorySession
 from .policy import WorkflowPolicy
-from .recorder import EpisodeRecorder
+from .recorder import EpisodeRecorder, PromptAuditRecorder
 from .success import SuccessEvaluator
 from .tools import ToolRegistry, build_real_tool_registry
 
@@ -87,6 +87,7 @@ class RuntimeEntrypoint:
         *,
         memory_scope_adapter: MemorySession | None = None,
         policy: WorkflowPolicy | None = None,
+        task_mode: str = "",
     ) -> "RuntimeEntrypoint":
         """Build an entrypoint backed by real production services.
 
@@ -96,7 +97,7 @@ class RuntimeEntrypoint:
         """
         services = RuntimeServices(
             planner=planner,
-            tools=build_real_tool_registry(executor),
+            tools=build_real_tool_registry(executor, task_mode=task_mode),
             memory=memory_scope_adapter if memory_scope_adapter is not None else MemoryService(),
             policy=policy if policy is not None else WorkflowPolicy(),
             environment=environment,
@@ -128,6 +129,32 @@ class RuntimeEntrypoint:
         recorder = EpisodeRecorder(event_log_path)
         self.services.recorder = recorder
         self.services.event_seq[0] = 2
+        if spec.output_dir:
+            self.services.prompt_audit = PromptAuditRecorder(spec.output_dir)
+
+        # Phase 2: wire SceneMemoryStore for cross-episode recall + sediment.
+        # Per-scene: created here (not at construction) because scene_id is
+        # request-scoped. Cleared in finally so services stay reusable.
+        if spec.output_dir:
+            from .scene_memory import SceneMemoryStore
+
+            self.services.scene_memory_store = SceneMemoryStore(
+                scene_id=request.scene_id,
+                output_dir=spec.output_dir,
+            )
+            # Register query_scene_memory lazily: build_real_tool_registry ran
+            # at construction before scene_id was known, so the store was not
+            # wired then. Register now if not already present.
+            if "query_scene_memory" not in self.services.tools.names():
+                from .tools import QuerySceneMemoryTool
+
+                self.services.tools.register(
+                    QuerySceneMemoryTool(
+                        self.services.scene_memory_store, self.services.planner
+                    )
+                )
+        else:
+            self.services.scene_memory_store = None
 
         recorder.append(
             make_event(
@@ -173,7 +200,9 @@ class RuntimeEntrypoint:
         finally:
             # Clear recorder so the services object is reusable across episodes
             # even when graph.invoke raises (partial log left to caller).
+            # scene_memory_store is per-scene; clear so next episode gets fresh.
             self.services.recorder = None
+            self.services.scene_memory_store = None
 
         return EpisodeResult(
             schema_version=state.schema_version,

@@ -513,6 +513,7 @@ def _fake_env_with_distance(
         env._current_pose = dict(current_pose)
     if goal_pose is not None:
         env._goal_pose = dict(goal_pose)
+        env._goal_poses = [dict(goal_pose)]
     return env
 
 
@@ -786,3 +787,356 @@ def test_goatbench_runtime_smoke_with_fake_services():
     assert state["success"] is True
     assert state["distance_to_goal"] == 0.5
     assert state["submitted_explicitly"] is True
+
+
+# ── Phase 2: compact trace tests ──────────────────────────────────────────
+
+
+from src.tiernav_runtime.context import ContextCompiler
+from src.tiernav_runtime.graph import (
+    COMPACT_THRESHOLD,
+    _compact_trace,
+    compile_context_node,
+)
+from src.tiernav_runtime.contracts import EpisodeState
+
+
+class CallVlmPlanner:
+    """Planner double exposing call_vlm for compact/recall paths.
+
+    decide() is inherited-style: returns a terminal submit so the graph
+    can complete if invoked. call_vlm returns the scripted raw text.
+    """
+
+    def __init__(self, vlm_text: str = "compact summary text", *, raise_on_vlm: bool = False) -> None:
+        self._vlm_text = vlm_text
+        self._raise_on_vlm = raise_on_vlm
+        self.vlm_calls: list[list[dict]] = []
+
+    def call_vlm(self, messages, **kwargs) -> str:
+        self.vlm_calls.append(messages)
+        if self._raise_on_vlm:
+            raise RuntimeError("simulated planner failure")
+        return self._vlm_text
+
+    def decide(self, prompt: str, **kwargs) -> PlannerDecision:
+        return PlannerDecision(
+            action_type="submit_answer", arguments={"answer": "x"}
+        )
+
+
+def _compact_services(planner: CallVlmPlanner) -> RuntimeServices:
+    return RuntimeServices(
+        planner=planner,
+        tools=with_stable_defaults(),
+        memory=MemoryService(enabled=True),
+        policy=WorkflowPolicy(),
+    )
+
+
+def _state_for_compact(round_index: int = COMPACT_THRESHOLD) -> EpisodeState:
+    return EpisodeState(
+        episode_id="ep-c1",
+        scene_id="scene-1",
+        task_name="aeqa",
+        task_mode="question_answering",
+        prompt="where is the mug?",
+        round_index=round_index,
+        step_index=round_index,
+        last_observation=Observation(summary="mug visible on counter", room_id="kitchen"),
+        distance_to_goal=0.5,
+        failure_type="",
+    )
+
+
+def test_compact_trace_returns_string_when_planner_returns_text():
+    planner = CallVlmPlanner(vlm_text="Rooms visited: kitchen. Mug found.")
+    services = _compact_services(planner)
+    episode = _state_for_compact()
+
+    result = _compact_trace(services, episode)
+
+    assert result == "Rooms visited: kitchen. Mug found."
+    assert len(planner.vlm_calls) == 1
+    # The compact prompt includes progress data from the episode.
+    sent = planner.vlm_calls[0][0]["content"]
+    assert "where is the mug?" in sent
+    assert "kitchen" in sent
+
+
+def test_compact_trace_returns_empty_on_planner_exception():
+    planner = CallVlmPlanner(raise_on_vlm=True)
+    services = _compact_services(planner)
+    episode = _state_for_compact()
+
+    result = _compact_trace(services, episode)
+
+    assert result == ""
+
+
+def test_compact_trace_returns_empty_on_blank_response():
+    planner = CallVlmPlanner(vlm_text="   \n  ")
+    services = _compact_services(planner)
+    episode = _state_for_compact()
+
+    result = _compact_trace(services, episode)
+
+    assert result == ""
+
+
+def _compile_context_invoke(services: RuntimeServices, episode: EpisodeState, spec: RunSpec) -> dict:
+    """Invoke compile_context_node directly with a synthetic graph_state."""
+    return compile_context_node(
+        {
+            "spec": spec.model_dump(mode="json"),
+            "state": episode.model_dump(mode="json"),
+        },
+        config={"configurable": {"services": services}},
+    )
+
+
+def test_compile_context_node_triggers_compact_when_round_threshold_met():
+    planner = CallVlmPlanner(vlm_text="compact: kitchen visited")
+    services = _compact_services(planner)
+    episode = _state_for_compact(round_index=COMPACT_THRESHOLD)
+
+    out = _compile_context_invoke(services, episode, _spec())
+    out_state = EpisodeState.model_validate(out["state"])
+
+    assert out_state.compact_summary == "compact: kitchen visited"
+    assert len(planner.vlm_calls) == 1
+
+
+def test_compile_context_node_does_not_recompact_when_summary_already_set():
+    planner = CallVlmPlanner(vlm_text="should not be called again")
+    services = _compact_services(planner)
+    episode = _state_for_compact(round_index=COMPACT_THRESHOLD + 2)
+    episode.compact_summary = "pre-existing summary"
+
+    out = _compile_context_invoke(services, episode, _spec())
+    out_state = EpisodeState.model_validate(out["state"])
+
+    assert out_state.compact_summary == "pre-existing summary"
+    assert planner.vlm_calls == []
+
+
+def test_compile_context_node_skips_compact_below_threshold():
+    planner = CallVlmPlanner(vlm_text="should not be called")
+    services = _compact_services(planner)
+    episode = _state_for_compact(round_index=COMPACT_THRESHOLD - 1)
+
+    out = _compile_context_invoke(services, episode, _spec())
+    out_state = EpisodeState.model_validate(out["state"])
+
+    assert out_state.compact_summary == ""
+    assert planner.vlm_calls == []
+
+
+# ── Phase 2: scene memory sediment tests ─────────────────────────────────
+
+
+from src.tiernav_runtime.graph import _sediment_scene_memory, finalize_node
+from src.tiernav_runtime.memory import MemorySession, ObjectNode, RoomNode
+from src.tiernav_runtime.contracts import MemoryScope
+
+
+class FakeSceneMemoryStore:
+    """Records update_room / add_episodic_note calls for assertions."""
+
+    def __init__(self) -> None:
+        self.room_updates: list[dict] = []
+        self.notes: list[dict] = []
+
+    def update_room(self, room_id, objects_seen, visited_round, connectivity=None, notes=""):
+        self.room_updates.append({
+            "room_id": room_id,
+            "objects_seen": list(objects_seen),
+            "visited_round": visited_round,
+            "connectivity": connectivity,
+            "notes": notes,
+        })
+
+    def add_episodic_note(self, round, room, event):
+        self.notes.append({"round": round, "room": room, "event": event})
+
+
+def _sediment_episode(success: bool = True, answer: str = "mug") -> EpisodeState:
+    return EpisodeState(
+        episode_id="ep-sed-1",
+        scene_id="scene-1",
+        task_name="aeqa",
+        task_mode="question_answering",
+        prompt="where is the mug?",
+        round_index=2,
+        step_index=2,
+        last_observation=Observation(summary="done", room_id="kitchen"),
+        terminal=True,
+        success=success,
+        answer=answer,
+        failure_type="" if success else "no_answer",
+    )
+
+
+def _session_with_rooms() -> MemorySession:
+    """Build a MemorySession with one room and one object in that room."""
+    session = MemorySession(scope=MemoryScope.SUBTASK_SEQUENCE)
+    session.start_session(episode_id="ep-sed-1")
+    mem = session.current_memory
+    mem.rooms["kitchen"] = RoomNode(room_id="kitchen")
+    mem.objects["mug"] = ObjectNode(object_id="mug", room_id="kitchen")
+    return session
+
+
+def test_sediment_calls_update_room_and_add_episodic_note():
+    store = FakeSceneMemoryStore()
+    session = _session_with_rooms()
+    planner = CallVlmPlanner()
+    services = RuntimeServices(
+        planner=planner,
+        tools=with_stable_defaults(),
+        memory=MemoryService(enabled=True),
+        policy=WorkflowPolicy(),
+        memory_session=session,
+        scene_memory_store=store,
+    )
+    episode = _sediment_episode()
+
+    _sediment_scene_memory(services, episode)
+
+    assert len(store.room_updates) == 1
+    ru = store.room_updates[0]
+    assert ru["room_id"] == "kitchen"
+    assert ru["objects_seen"] == ["mug"]
+    assert ru["visited_round"] == 2
+    assert ru["notes"] == "success"
+    assert len(store.notes) == 1
+    note = store.notes[0]
+    assert note["room"] == "kitchen"
+    assert "episode=ep-sed-1" in note["event"]
+    assert "success=True" in note["event"]
+    assert "answer=mug" in note["event"]
+
+
+def test_sediment_failure_note_when_episode_failed():
+    store = FakeSceneMemoryStore()
+    session = _session_with_rooms()
+    planner = CallVlmPlanner()
+    services = RuntimeServices(
+        planner=planner,
+        tools=with_stable_defaults(),
+        memory=MemoryService(enabled=True),
+        policy=WorkflowPolicy(),
+        memory_session=session,
+        scene_memory_store=store,
+    )
+    episode = _sediment_episode(success=False, answer="")
+    episode.failure_type = "no_answer"
+
+    _sediment_scene_memory(services, episode)
+
+    assert store.room_updates[0]["notes"] == "failed: no_answer"
+    assert "success=False" in store.notes[0]["event"]
+
+
+def test_sediment_is_noop_when_store_is_none():
+    session = _session_with_rooms()
+    planner = CallVlmPlanner()
+    services = RuntimeServices(
+        planner=planner,
+        tools=with_stable_defaults(),
+        memory=MemoryService(enabled=True),
+        policy=WorkflowPolicy(),
+        memory_session=session,
+        scene_memory_store=None,
+    )
+    episode = _sediment_episode()
+
+    # Must not raise.
+    _sediment_scene_memory(services, episode)
+
+
+def test_sediment_is_non_fatal_when_session_not_started():
+    """session.current_memory raises RuntimeError before any session is started."""
+    store = FakeSceneMemoryStore()
+    session = MemorySession(scope=MemoryScope.SUBTASK_SEQUENCE)
+    planner = CallVlmPlanner()
+    services = RuntimeServices(
+        planner=planner,
+        tools=with_stable_defaults(),
+        memory=MemoryService(enabled=True),
+        policy=WorkflowPolicy(),
+        memory_session=session,
+        scene_memory_store=store,
+    )
+    episode = _sediment_episode()
+
+    _sediment_scene_memory(services, episode)
+
+    # No session -> no rooms iterated -> no calls.
+    assert store.room_updates == []
+    assert store.notes == []
+
+
+def test_sediment_is_non_fatal_when_memory_session_is_none():
+    store = FakeSceneMemoryStore()
+    planner = CallVlmPlanner()
+    services = RuntimeServices(
+        planner=planner,
+        tools=with_stable_defaults(),
+        memory=MemoryService(enabled=True),
+        policy=WorkflowPolicy(),
+        memory_session=None,
+        scene_memory_store=store,
+    )
+    episode = _sediment_episode()
+
+    _sediment_scene_memory(services, episode)
+    assert store.room_updates == []
+    assert store.notes == []
+
+
+def test_finalize_node_invokes_sediment_on_terminal_episode():
+    """finalize_node early-exit path must still call sediment."""
+    store = FakeSceneMemoryStore()
+    session = _session_with_rooms()
+    planner = CallVlmPlanner()
+    services = RuntimeServices(
+        planner=planner,
+        tools=with_stable_defaults(),
+        memory=MemoryService(enabled=True),
+        policy=WorkflowPolicy(),
+        memory_session=session,
+        scene_memory_store=store,
+    )
+    # Episode already terminal (e.g. set by fallback_node or execute_tool).
+    episode = _sediment_episode()
+    graph_state = {"state": episode.model_dump(mode="json")}
+
+    finalize_node(graph_state, config={"configurable": {"services": services}})
+
+    assert len(store.room_updates) == 1, "sediment must run on terminal early-exit"
+    assert len(store.notes) == 1
+
+
+def test_finalize_node_invokes_sediment_on_legacy_path():
+    """finalize_node legacy (no evaluator) path must call sediment."""
+    store = FakeSceneMemoryStore()
+    session = _session_with_rooms()
+    planner = FakePlanner(
+        [PlannerDecision(action_type="submit_answer", arguments={"answer": "mug"})]
+    )
+    services = RuntimeServices(
+        planner=planner,
+        tools=with_stable_defaults(),
+        memory=MemoryService(enabled=True),
+        policy=WorkflowPolicy(),
+        memory_session=session,
+        scene_memory_store=store,
+    )
+    # Drive the full graph so finalize runs through the legacy path.
+    final_state = _run(services, _spec(), _request())
+
+    assert final_state["state"]["terminal"] is True
+    assert len(store.room_updates) >= 1, "sediment must run on legacy path"
+    assert len(store.notes) >= 1
+
