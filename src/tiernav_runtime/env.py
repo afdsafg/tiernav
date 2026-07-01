@@ -66,6 +66,7 @@ class RuntimeEnvironmentService:
         self._goal_poses: list[dict[str, float]] = []
         self._episode_id: Optional[str] = None
         self._is_torn_down: bool = False
+        self._initial_visual_observation: Optional[Any] = None
 
     # --- Properties -------------------------------------------------------
 
@@ -219,6 +220,7 @@ class RuntimeEnvironmentService:
 
         self._current_pose = dict(initial_pose)
         self._path_length = 0.0
+        self._initial_visual_observation = None
         if self.executor is not None and hasattr(self.executor, "set_state"):
             # Habitat uses 3D pts [x, y, z] where y is up. numpy array so
             # downstream code can do pts[[0, 2]] fancy indexing.
@@ -232,6 +234,209 @@ class RuntimeEnvironmentService:
             except TypeError:
                 # Executor signature mismatch — leave pose bookkeeping to env.
                 pass
+
+    # --- AEQA visual adapter ---------------------------------------------
+
+    def initialize_aeqa_visual_context(self) -> None:
+        """Run the fixed AEQA initial panorama to seed snapshots and frontiers.
+
+        The AEQA planner only sees `explore_frontier` and `submit_answer`, but
+        Pred-EQA-style first-step decisions need visual evidence. The existing
+        executor's panorama path performs real perception, snapshot storage, and
+        frontier construction; this method exposes it as environment
+        initialization rather than as a VLM-selectable tool.
+        """
+        if self._task_mode is not TaskMode.QUESTION_ANSWERING:
+            return
+        if self.executor is None or not hasattr(self.executor, "explore_panorama"):
+            return
+        self._initial_visual_observation = self.executor.explore_panorama()
+        self._refresh_frontier_map_from_executor()
+        self._sync_pose_from_executor()
+
+    def _refresh_frontier_map_from_executor(self) -> None:
+        tsdf = self.tsdf_planner
+        executor = self.executor
+        if tsdf is None or executor is None or not hasattr(tsdf, "update_frontier_map"):
+            return
+        pts = getattr(executor, "_pts", None)
+        if pts is None:
+            return
+        cfg = getattr(getattr(executor, "cfg", None), "planner", None)
+        if cfg is None:
+            return
+        try:
+            tsdf.update_frontier_map(
+                pts,
+                cfg,
+                self.scene,
+                int(getattr(executor, "_step_counter", 0) or 0),
+                save_frontier_image=False,
+            )
+        except Exception as exc:
+            if self.logger is not None:
+                self.logger.warning("AEQA initial frontier refresh failed: %s", exc)
+
+    def get_aeqa_visual_state(self, episode: Any) -> dict[str, Any]:
+        """Return real image evidence for the AEQA predictive controller."""
+        return {
+            "question": str(getattr(episode, "prompt", "") or ""),
+            "current_step": int(getattr(episode, "step_index", 0) or 0),
+            "snapshots": self._build_aeqa_snapshots(),
+            "frontiers": self._build_aeqa_frontiers(),
+            "egocentric_views": self._build_aeqa_egocentric_views(episode),
+            "memory_text": self._build_aeqa_memory_text(),
+            "tool_feedback": self._build_aeqa_tool_feedback(episode),
+        }
+
+    def _sync_pose_from_executor(self) -> None:
+        executor = self.executor
+        if executor is None or not hasattr(executor, "_pts") or executor._pts is None:
+            return
+        pts = executor._pts
+        angle = getattr(executor, "_angle", 0.0) or 0.0
+        self._current_pose = {
+            "x": float(pts[0]) if len(pts) > 0 else 0.0,
+            "y": float(pts[1]) if len(pts) > 1 else 0.0,
+            "z": float(pts[2]) if len(pts) > 2 else 0.0,
+            "theta": float(angle),
+        }
+        self._path_length = float(getattr(executor, "_path_length", 0.0) or 0.0)
+
+    @staticmethod
+    def _image_to_b64(image: Any) -> str:
+        if image is None:
+            return ""
+        if isinstance(image, str):
+            if image.startswith("data:image/") and "base64," in image:
+                return image.split("base64,", 1)[1]
+            return image
+        try:
+            from src.agent_image_utils import numpy_to_base64
+            import numpy as np
+
+            arr = np.asarray(image)
+            if arr.ndim < 2:
+                return ""
+            if arr.ndim == 3 and arr.shape[-1] > 3:
+                arr = arr[..., :3]
+            return numpy_to_base64(arr, fmt="PNG")
+        except Exception:
+            return ""
+
+    def _build_aeqa_snapshots(self) -> list[dict[str, str]]:
+        scene = self.scene
+        snapshots = getattr(scene, "snapshots", {}) or {}
+        observations = getattr(scene, "all_observations", {}) or {}
+        objects = getattr(scene, "objects", {}) or {}
+        items = snapshots.items() if hasattr(snapshots, "items") else enumerate(snapshots)
+
+        result: list[dict[str, str]] = []
+        for idx, (snapshot_id, snapshot) in enumerate(items):
+            image = observations.get(snapshot_id)
+            if image is None:
+                image = getattr(snapshot, "image", None)
+            image_b64 = self._image_to_b64(image)
+            if not image_b64:
+                continue
+            classes = self._snapshot_class_names(snapshot, objects)
+            label = f"Snapshot {idx}"
+            if classes:
+                label += " objects: " + ", ".join(classes)
+            result.append({
+                "image_id": str(snapshot_id),
+                "image_b64": image_b64,
+                "label": label,
+                "source": "snapshot",
+            })
+        return result
+
+    @staticmethod
+    def _snapshot_class_names(snapshot: Any, objects: Any) -> list[str]:
+        names: list[str] = []
+        for obj_id in getattr(snapshot, "cluster", []) or []:
+            obj = None
+            try:
+                obj = objects.get(obj_id)
+            except Exception:
+                obj = None
+            if obj is None:
+                try:
+                    obj = objects.get(str(obj_id))
+                except Exception:
+                    obj = None
+            if isinstance(obj, dict):
+                name = obj.get("class_name") or obj.get("name")
+                if name:
+                    names.append(str(name))
+        return sorted(set(names))
+
+    def _build_aeqa_frontiers(self) -> list[dict[str, str]]:
+        frontiers = getattr(self.tsdf_planner, "frontiers", []) or []
+        result: list[dict[str, str]] = []
+        for frontier in frontiers:
+            image_b64 = self._image_to_b64(getattr(frontier, "feature", None))
+            if not image_b64:
+                continue
+            frontier_id = str(getattr(frontier, "frontier_id", len(result)))
+            label = f"Frontier {frontier_id}"
+            room_id = getattr(frontier, "room_id", None)
+            if room_id is not None:
+                label += f" room {room_id}"
+            result.append({
+                "frontier_id": frontier_id,
+                "image_b64": image_b64,
+                "label": label,
+            })
+        return result
+
+    def _build_aeqa_egocentric_views(self, episode: Any) -> list[dict[str, str]]:
+        views: list[dict[str, str]] = []
+        initial_b64 = self._image_to_b64(
+            getattr(self._initial_visual_observation, "current_image_b64", None)
+        )
+        if initial_b64:
+            views.append({
+                "image_id": "initial_panorama",
+                "image_b64": initial_b64,
+                "label": "Initial panorama",
+                "source": "egocentric",
+            })
+
+        last_observation = getattr(episode, "last_observation", None)
+        raw = getattr(last_observation, "raw", {}) if last_observation is not None else {}
+        current_b64 = ""
+        if isinstance(raw, dict):
+            current_b64 = self._image_to_b64(raw.get("current_image_b64"))
+        if current_b64:
+            views.append({
+                "image_id": "current_view",
+                "image_b64": current_b64,
+                "label": "Current egocentric view",
+                "source": "egocentric",
+            })
+        return views
+
+    def _build_aeqa_memory_text(self) -> str:
+        lines: list[str] = []
+        if self._initial_visual_observation is not None:
+            progress = getattr(self._initial_visual_observation, "progress", "") or ""
+            if progress:
+                lines.append("Initial observation: " + str(progress))
+        frontiers = getattr(self.tsdf_planner, "frontiers", []) or []
+        if frontiers:
+            ids = [str(getattr(frontier, "frontier_id", "?")) for frontier in frontiers[:20]]
+            lines.append("Available frontiers: " + ", ".join(ids))
+        return "\n".join(lines)
+
+    def _build_aeqa_tool_feedback(self, episode: Any) -> str:
+        last_observation = getattr(episode, "last_observation", None)
+        summary = getattr(last_observation, "summary", "") if last_observation is not None else ""
+        if summary:
+            return str(summary)
+        if self._initial_visual_observation is not None:
+            return str(getattr(self._initial_visual_observation, "progress", "") or "")
+        return ""
 
     def teardown_session(self) -> None:
         """Clean up scene resources. Idempotent."""

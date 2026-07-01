@@ -22,3 +22,4 @@ def test_aeqa_runner_wires_predictive_controller_and_tool_registry():
     assert "tools=aeqa_tools" in source
     assert "aeqa_controller=aeqa_controller" in source
     assert "initial_pose = initial_pose_from_pts(start_pts, start_angle)" in source
+    assert "env.initialize_aeqa_visual_context()" in source

@@ -216,6 +216,7 @@ def _run_aeqa_runtime(
     # 9. Session lifecycle
     env.start_session(episode_id=question_id, initial_pose=initial_pose)
     try:
+        env.initialize_aeqa_visual_context()
         result = entrypoint.run(spec, request)
     finally:
         env.teardown_session()
