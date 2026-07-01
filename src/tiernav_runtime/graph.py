@@ -17,6 +17,7 @@ round-trips pydantic models via ``model_validate`` /
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
@@ -93,6 +94,9 @@ class RuntimeServices:
     # Per-round prompt-section audit recorder (full content). None on the
     # fake/dev path and when output_dir is unset.
     prompt_audit: PromptAuditRecorder | None = None
+    # Phase 2: cross-episode scene memory store for model-driven recall.
+    # None on the fake/dev path; wired by the entrypoint for real episodes.
+    scene_memory_store: Any = None
     # ponytail: `subtask_started` (design-spec event 11) is GOATBench-only and
     # emitted by the runner at subtask boundaries, not by a graph node — the
     # graph has no subtask concept. Add a runner-side emit if GOATBench needs
@@ -140,6 +144,40 @@ def _services(config: RunnableConfig) -> RuntimeServices:
 # --- Nodes -----------------------------------------------------------------
 
 
+COMPACT_THRESHOLD = 5  # round_index >= 5 triggers compact
+
+
+def _compact_trace(services: "RuntimeServices", episode: EpisodeState) -> str:
+    """Compress early rounds into a single summary via the planner model.
+
+    Returns empty string on failure (non-fatal). Uses call_vlm for raw text.
+    """
+    early_summary = (
+        "episode_id: " + episode.episode_id + "\n"
+        "scene_id: " + episode.scene_id + "\n"
+        "task: " + episode.prompt + "\n"
+        "rounds_completed: " + str(episode.round_index) + "\n"
+        "steps_taken: " + str(episode.step_index) + "\n"
+        "last_observation: " + episode.last_observation.summary + "\n"
+        "last_room: " + str(episode.last_observation.room_id or "") + "\n"
+        "distance_to_goal: " + (str(episode.distance_to_goal) if episode.distance_to_goal is not None else "unknown") + "\n"
+        "failure_type: " + (episode.failure_type or "none")
+    )
+    prompt = (
+        "Summarize the navigation progress so far into a compact note for the planner.\n"
+        "Keep it under 150 words. Focus on: rooms visited, objects found, failed attempts, "
+        "current position, and what remains to find.\n\n"
+        "Progress data:\n" + early_summary
+    )
+    try:
+        raw = services.planner.call_vlm([{"role": "user", "content": prompt}])
+    except Exception:
+        return ""
+    if not raw or not raw.strip():
+        return ""
+    return raw.strip()
+
+
 def bootstrap_node(
     graph_state: RuntimeGraphState, config: RunnableConfig
 ) -> RuntimeGraphState:
@@ -167,6 +205,42 @@ def compile_context_node(
         # Only retain a pack that carries real content; an empty summary
         # means memory had nothing to contribute this round.
         episode.memory_pack = pack if pack.summary else None
+
+    # Phase 2: compact early trace when round_index >= threshold.
+    if (
+        episode.round_index >= COMPACT_THRESHOLD
+        and not episode.compact_summary
+    ):
+        episode.compact_summary = _compact_trace(services, episode)
+
+    # Phase 2: auto-recall at subtask start (step_index == 0 and no
+    # recalled_memory yet). Uses SceneMemoryStore if available on services,
+    # reuses planner model. Recall failure is non-fatal.
+    scene_memory_store = getattr(services, "scene_memory_store", None)
+    if (
+        scene_memory_store is not None
+        and episode.step_index == 0
+        and not episode.recalled_memory
+    ):
+        try:
+            manifest = scene_memory_store.get_manifest()
+            current_room = str(episode.last_observation.room_id or "")
+            nodes = scene_memory_store.recall(
+                episode.prompt, manifest, current_room, services.planner
+            )
+            detail_lines = []
+            for node in nodes:
+                detail = scene_memory_store.get_node_detail(node["type"], node["id"])
+                if detail:
+                    detail_lines.append(
+                        "- " + node["type"] + " " + node["id"]
+                        + " (" + node.get("reason", "") + "): "
+                        + json.dumps(detail, ensure_ascii=False)
+                    )
+            if detail_lines:
+                episode.recalled_memory = "\n".join(detail_lines)
+        except Exception:
+            pass  # recall failure is non-fatal
 
     sections = services.context.compile(
         episode,
@@ -345,6 +419,82 @@ def recover_stall_node(
     return {"state": episode.model_dump(mode="json")}
 
 
+def _sediment_scene_memory(
+    services: "RuntimeServices", episode: EpisodeState
+) -> None:
+    """Sediment episode room/object observations into SceneMemoryStore.
+
+    Non-fatal: logs and swallows errors. No-op when scene_memory_store is None
+    or memory_session is None (or has no active session).
+    """
+    store = getattr(services, "scene_memory_store", None)
+    if store is None:
+        return
+    session = services.memory_session
+    if session is None:
+        return
+    try:
+        try:
+            memory = session.current_memory
+        except RuntimeError:
+            return
+        if memory is None:
+            return
+
+        # Sediment rooms with their objects (merge contract memory + scene_graph
+        # categories when available, since scene_graph carries richer metadata).
+        sg = getattr(session, "scene_graph", None)
+        for room_id, room_node in memory.rooms.items():
+            objects_seen = sorted(
+                {
+                    obj.object_id
+                    for obj in memory.objects.values()
+                    if obj.room_id == room_id
+                }
+            )
+            sg_objects: list[str] = []
+            if sg is not None:
+                rid_int = int(room_id) if room_id.isdigit() else None
+                if rid_int is not None:
+                    sg_room = getattr(sg, "rooms", {}).get(rid_int)
+                    if sg_room is not None:
+                        for oid in getattr(sg_room, "object_ids", []) or []:
+                            obj = getattr(sg, "objects", {}).get(oid)
+                            if obj is not None and not getattr(obj, "rejected", False):
+                                cat = getattr(obj, "category", None)
+                                if cat:
+                                    sg_objects.append(str(cat))
+            all_objects = sorted(set(objects_seen) | set(sg_objects))
+            store.update_room(
+                room_id=str(room_id),
+                objects_seen=all_objects,
+                visited_round=int(episode.round_index),
+                notes=(
+                    "success"
+                    if episode.success
+                    else ("failed: " + (episode.failure_type or "unknown"))
+                ),
+            )
+
+        # Episodic note: compact summary of this episode's outcome.
+        answer_preview = (episode.answer or "")[:80]
+        note_event = (
+            "episode=" + episode.episode_id
+            + " success=" + str(episode.success)
+            + " answer=" + (answer_preview if answer_preview else "none")
+            + " failure=" + (episode.failure_type or "none")
+        )
+        last_room = str(episode.last_observation.room_id or "unknown")
+        store.add_episodic_note(
+            round=int(episode.round_index),
+            room=last_room,
+            event=note_event,
+        )
+    except Exception:
+        # Sediment failure must never block episode completion.
+        pass
+
+
 def finalize_node(
     graph_state: RuntimeGraphState, config: RunnableConfig
 ) -> RuntimeGraphState:
@@ -355,6 +505,7 @@ def finalize_node(
     # finalized the episode. Respect that and do not clobber answer /
     # failure_type with a submit_answer read that has no answer argument.
     if episode.terminal:
+        _sediment_scene_memory(services, episode)
         return {"state": episode.model_dump(mode="json")}
 
     # --- Evaluator path (real services) ---
@@ -396,6 +547,7 @@ def finalize_node(
             "distance_to_goal": episode.distance_to_goal,
             "failure_type": episode.failure_type,
         })
+        _sediment_scene_memory(services, episode)
         return {"state": episode.model_dump(mode="json")}
 
     # --- Legacy AEQA path (fake services, no evaluator) ---
@@ -410,6 +562,7 @@ def finalize_node(
         "distance_to_goal": episode.distance_to_goal,
         "failure_type": episode.failure_type,
     })
+    _sediment_scene_memory(services, episode)
     return {"state": episode.model_dump(mode="json")}
 
 

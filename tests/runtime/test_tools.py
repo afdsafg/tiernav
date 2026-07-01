@@ -13,10 +13,12 @@ from src.tiernav_runtime.contracts import (
 from src.tiernav_runtime.planner import planner_action_to_decision
 from src.tiernav_runtime.tools import (
     NoopNavigationTool,
+    QuerySceneMemoryTool,
     RuntimeTool,
     SubmitAnswerTool,
     ToolRegistry,
     build_real_tool_registry,
+    register_query_scene_memory,
     with_stable_defaults,
 )
 
@@ -492,3 +494,259 @@ def test_evidence_to_observation_summary_falls_back_to_outcome_when_progress_emp
     assert obs.summary == "object_found"
     assert obs.raw["progress"] == ""
     assert obs.raw["salient"] == []
+
+
+# ── QuerySceneMemoryTool ───────────────────────────────────────────────────
+
+
+class FakeSceneMemoryStore:
+    """Duck-typed SceneMemoryStore for QuerySceneMemoryTool tests.
+
+    - get_manifest() returns a fixed manifest string
+    - recall(...) returns ``recall_result`` (a list of node dicts)
+    - get_node_detail(...) returns ``details`` keyed by (node_type, node_id)
+    """
+
+    def __init__(self, recall_result=None, details=None, recall_raises=None):
+        self.recall_result = recall_result if recall_result is not None else []
+        self.details = details or {}
+        self.recall_raises = recall_raises
+        self.last_recall_args = None
+
+    def get_manifest(self) -> str:
+        return "manifest"
+
+    def recall(self, query, manifest, current_room, planner_client):
+        self.last_recall_args = (query, manifest, current_room, planner_client)
+        if self.recall_raises is not None:
+            raise self.recall_raises
+        return self.recall_result
+
+    def get_node_detail(self, node_type, node_id):
+        return self.details.get((node_type, node_id))
+
+
+class FakePlannerClient:
+    """Placeholder planner client; recall() in tests doesn't actually call it."""
+
+    pass
+
+
+def test_query_scene_memory_returns_recalled_details():
+    store = FakeSceneMemoryStore(
+        recall_result=[
+            {"type": "object", "id": "chair_1", "reason": "target object"},
+        ],
+        details={("object", "chair_1"): {"color": "red", "room": "living"}},
+    )
+    tool = QuerySceneMemoryTool(store, FakePlannerClient())
+    call = ToolCall(
+        call_id="qsm1",
+        action_type="query_scene_memory",
+        arguments={"query": "where is the chair"},
+    )
+    result = tool.run(call)
+
+    assert result.ok is True
+    assert result.terminal is False
+    assert result.call_id == "qsm1"
+    assert result.action_type == "query_scene_memory"
+    # Recall received correct args; current_room passed as empty string.
+    assert store.last_recall_args == (
+        "where is the chair",
+        "manifest",
+        "",
+        tool._planner,
+    )
+    # Summary contains node type, id, reason, and json detail.
+    summary = result.observation.summary
+    assert "object" in summary
+    assert "chair_1" in summary
+    assert "target object" in summary
+    assert '"color": "red"' in summary
+    assert '"room": "living"' in summary
+
+
+def test_query_scene_memory_empty_query_returns_error():
+    tool = QuerySceneMemoryTool(FakeSceneMemoryStore(), FakePlannerClient())
+    call = ToolCall(
+        call_id="qsm2",
+        action_type="query_scene_memory",
+        arguments={"query": ""},
+    )
+    result = tool.run(call)
+
+    assert result.ok is False
+    assert result.terminal is False
+    assert "requires a 'query' argument" in result.error
+
+
+def test_query_scene_memory_missing_query_key_returns_error():
+    tool = QuerySceneMemoryTool(FakeSceneMemoryStore(), FakePlannerClient())
+    call = ToolCall(
+        call_id="qsm3",
+        action_type="query_scene_memory",
+        arguments={},
+    )
+    result = tool.run(call)
+
+    assert result.ok is False
+    assert result.terminal is False
+    assert "requires a 'query' argument" in result.error
+
+
+def test_query_scene_memory_empty_recall_returns_no_memory_found():
+    store = FakeSceneMemoryStore(recall_result=[])
+    tool = QuerySceneMemoryTool(store, FakePlannerClient())
+    call = ToolCall(
+        call_id="qsm4",
+        action_type="query_scene_memory",
+        arguments={"query": "anything"},
+    )
+    result = tool.run(call)
+
+    assert result.ok is True
+    assert result.terminal is False
+    assert result.observation.summary == "no relevant scene memory found"
+
+
+def test_query_scene_memory_recall_exception_returns_structured_error():
+    store = FakeSceneMemoryStore(recall_raises=RuntimeError("planner down"))
+    tool = QuerySceneMemoryTool(store, FakePlannerClient())
+    call = ToolCall(
+        call_id="qsm5",
+        action_type="query_scene_memory",
+        arguments={"query": "x"},
+    )
+    result = tool.run(call)
+
+    assert result.ok is False
+    assert result.terminal is False
+    assert "recall failed" in result.error
+    assert "planner down" in result.error
+
+
+def test_query_scene_memory_no_details_returns_recalled_nodes_had_no_details():
+    store = FakeSceneMemoryStore(
+        recall_result=[{"type": "room", "id": "r_1", "reason": "vague"}],
+        details={("room", "r_1"): None},
+    )
+    tool = QuerySceneMemoryTool(store, FakePlannerClient())
+    call = ToolCall(
+        call_id="qsm6",
+        action_type="query_scene_memory",
+        arguments={"query": "rooms"},
+    )
+    result = tool.run(call)
+
+    assert result.ok is True
+    assert result.terminal is False
+    assert result.observation.summary == "recalled nodes had no details"
+
+
+def test_query_scene_memory_multiple_nodes_format():
+    store = FakeSceneMemoryStore(
+        recall_result=[
+            {"type": "object", "id": "o1", "reason": "r1"},
+            {"type": "room", "id": "r2", "reason": "r2"},
+        ],
+        details={
+            ("object", "o1"): {"k": 1},
+            ("room", "r2"): {"k": 2},
+        },
+    )
+    tool = QuerySceneMemoryTool(store, FakePlannerClient())
+    call = ToolCall(
+        call_id="qsm7",
+        action_type="query_scene_memory",
+        arguments={"query": "multi"},
+    )
+    result = tool.run(call)
+
+    assert result.ok is True
+    summary = result.observation.summary
+    assert summary.count("\n") == 1  # two lines joined
+    assert "object o1 (r1)" in summary
+    assert "room r2 (r2)" in summary
+
+
+# ── build_real_tool_registry wiring ────────────────────────────────────────
+
+
+def test_build_real_tool_registry_registers_query_scene_memory_when_store_and_planner():
+    reg = build_real_tool_registry(
+        FakeExecutor(),
+        scene_memory_store=FakeSceneMemoryStore(),
+        planner_client=FakePlannerClient(),
+    )
+    names = reg.names()
+    assert "query_scene_memory" in names
+    # Default tools still present.
+    for required in (
+        "explore_panorama",
+        "navigate_to_object",
+        "explore_seed",
+        "explore_frontier",
+        "submit_answer",
+    ):
+        assert required in names
+
+
+def test_build_real_tool_registry_no_query_scene_memory_when_store_none():
+    """Backward compat: omitting store+planner yields no query_scene_memory."""
+    reg = build_real_tool_registry(FakeExecutor())
+    assert "query_scene_memory" not in reg.names()
+
+
+def test_build_real_tool_registry_no_query_scene_memory_when_only_store():
+    """Both store and planner are required; passing only store is a no-op."""
+    reg = build_real_tool_registry(
+        FakeExecutor(),
+        scene_memory_store=FakeSceneMemoryStore(),
+        planner_client=None,
+    )
+    assert "query_scene_memory" not in reg.names()
+
+
+def test_build_real_tool_registry_no_query_scene_memory_when_only_planner():
+    reg = build_real_tool_registry(
+        FakeExecutor(),
+        scene_memory_store=None,
+        planner_client=FakePlannerClient(),
+    )
+    assert "query_scene_memory" not in reg.names()
+
+
+def test_register_query_scene_memory_helper_registers_when_store_present():
+    reg = ToolRegistry()
+    register_query_scene_memory(reg, FakeSceneMemoryStore(), FakePlannerClient())
+    assert "query_scene_memory" in reg.names()
+
+
+def test_register_query_scene_memory_helper_noop_when_store_none():
+    reg = ToolRegistry()
+    register_query_scene_memory(reg, None, FakePlannerClient())
+    assert "query_scene_memory" not in reg.names()
+
+
+def test_query_scene_memory_dispatched_via_registry():
+    """End-to-end: dispatch through the registry returns recalled details."""
+    store = FakeSceneMemoryStore(
+        recall_result=[{"type": "object", "id": "o_9", "reason": "seen"}],
+        details={("object", "o_9"): {"shape": "round"}},
+    )
+    reg = build_real_tool_registry(
+        FakeExecutor(),
+        scene_memory_store=store,
+        planner_client=FakePlannerClient(),
+    )
+    call = ToolCall(
+        call_id="qsm_dispatch",
+        action_type="query_scene_memory",
+        arguments={"query": "round things"},
+    )
+    result = reg.dispatch(call)
+    assert result.ok is True
+    assert result.terminal is False
+    assert "o_9" in result.observation.summary
+    assert '"shape": "round"' in result.observation.summary

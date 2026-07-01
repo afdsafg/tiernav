@@ -513,15 +513,15 @@ def test_task_state_contains_agent_workflow_guidance():
 
 
 class _SceneGraph:
-    def get_summary_for_planner(self):
-        return "## Scene Graph Memory\n- Room 2 [partially_explored] objects=['sofa'] evidence=1"
+    def get_manifest(self):
+        return "rooms: 2(partially_explored)\nobjects: sofa x1\nevidence: 1 entries"
 
 
 class _EnvWithSceneGraph:
     scene_graph_memory = _SceneGraph()
 
 
-def test_scene_graph_memory_section_uses_env_scene_graph_summary():
+def test_scene_graph_memory_section_uses_env_scene_graph_manifest():
     state = _base_state()
     compiler = ContextCompiler()
 
@@ -532,9 +532,24 @@ def test_scene_graph_memory_section_uses_env_scene_graph_summary():
     )
     scene_graph = {s.name: s for s in sections}["scene_graph_memory"]
 
-    assert "Room 2" in scene_graph.content
+    assert "2(partially_explored)" in scene_graph.content
     assert "sofa" in scene_graph.content
     assert not scene_graph.cacheable
+
+
+def test_scene_graph_memory_section_appends_recalled_memory():
+    state = _base_state(recalled_memory="- room 2 (goal): {\"notes\": \"kitchen\"}")
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(
+        state,
+        action_schema=SCHEMA,
+        env=_EnvWithSceneGraph(),
+    )
+    scene_graph = {s.name: s for s in sections}["scene_graph_memory"]
+
+    assert "recalled_details:" in scene_graph.content
+    assert "- room 2 (goal)" in scene_graph.content
 
 
 def test_tool_feedback_section_surfaces_failed_tool_result():
@@ -610,3 +625,28 @@ def test_available_targets_marks_missing_frontiers_as_none_when_seeds_exist():
     targets = {s.name: s for s in sections}["available_targets"]
 
     assert "frontiers: none" in targets.content
+
+
+# --- Phase 2: compact_summary in task_state --------------------------------
+
+
+def test_task_state_includes_compact_summary_when_set():
+    state = _base_state(compact_summary="Rooms visited: kitchen. Mug found on counter.")
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema=SCHEMA)
+    task_state = {s.name: s for s in sections}["task_state"]
+
+    assert "compact_summary:" in task_state.content
+    assert "Rooms visited: kitchen. Mug found on counter." in task_state.content
+
+
+def test_task_state_omits_compact_summary_when_empty():
+    state = _base_state(compact_summary="")
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema=SCHEMA)
+    task_state = {s.name: s for s in sections}["task_state"]
+
+    assert "compact_summary:" not in task_state.content
+

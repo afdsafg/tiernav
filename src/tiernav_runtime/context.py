@@ -114,7 +114,7 @@ class ContextCompiler:
         task_state = self._render_task_state(state)
         recent_trace = self._render_recent_trace(state)
         observation_text = self._render_observation(state)
-        scene_graph_text = self._render_scene_graph_memory(env, include_memory)
+        scene_graph_text = self._render_scene_graph_memory(state, env, include_memory)
         targets_text = self._render_available_targets(env)
         tool_feedback = self._render_tool_feedback(state)
         policy_text = policy_hint
@@ -177,6 +177,10 @@ class ContextCompiler:
             lines.append(f"last_failure_type: {state.failure_type}")
         if state.distance_to_goal is not None:
             lines.append(f"distance_to_goal_m: {state.distance_to_goal:.3f}")
+        if state.compact_summary:
+            lines.append("")
+            lines.append("compact_summary:")
+            lines.append(state.compact_summary)
         return "\n".join(lines)
 
     @staticmethod
@@ -196,19 +200,25 @@ class ContextCompiler:
         return "\n".join(parts)
 
     @staticmethod
-    def _render_scene_graph_memory(env: Any, include_memory: bool) -> str:
+    def _render_scene_graph_memory(state: EpisodeState, env: Any, include_memory: bool) -> str:
         if not include_memory or env is None:
             return ""
         graph = getattr(env, "scene_graph_memory", None)
         if graph is None:
             session = getattr(env, "memory_session", None)
             graph = getattr(session, "scene_graph", None) if session is not None else None
-        if graph is None or not hasattr(graph, "get_summary_for_planner"):
+        if graph is None or not hasattr(graph, "get_manifest"):
             return ""
         try:
-            return str(graph.get_summary_for_planner())
+            manifest = str(graph.get_manifest())
         except Exception:
             return ""
+        parts = [manifest]
+        if state.recalled_memory:
+            parts.append("")
+            parts.append("recalled_details:")
+            parts.append(state.recalled_memory)
+        return "\n".join(parts)
 
     @staticmethod
     def _render_tool_feedback(state: EpisodeState) -> str:

@@ -11,5 +11,6 @@ STRATEGY_TEXT = (
     "Strategy: explore_panorama to observe -> explore_frontier/explore_seed to move -> navigate_to_object once target visible -> submit_answer when done.\n"
     'Example: {"action_type": "explore_panorama", "reason": "Need to observe surroundings", "expected": "Get room layout"}\n'
     "For target tools, copy the exact frontier_id, seed_id, or object_name from available_targets.\n"
+    "query_scene_memory: call ONLY when you believe relevant goal/answer info exists in memory but is not shown in the current prompt. Recalled content persists across rounds — do not query the same content twice.\n"
     'Example: {"action_type": "submit_answer", "reason": "Final answer", "expected": "Done", "answer": "<your answer here>"}'
 )

@@ -131,6 +131,30 @@ class RuntimeEntrypoint:
         if spec.output_dir:
             self.services.prompt_audit = PromptAuditRecorder(spec.output_dir)
 
+        # Phase 2: wire SceneMemoryStore for cross-episode recall + sediment.
+        # Per-scene: created here (not at construction) because scene_id is
+        # request-scoped. Cleared in finally so services stay reusable.
+        if spec.output_dir:
+            from .scene_memory import SceneMemoryStore
+
+            self.services.scene_memory_store = SceneMemoryStore(
+                scene_id=request.scene_id,
+                output_dir=spec.output_dir,
+            )
+            # Register query_scene_memory lazily: build_real_tool_registry ran
+            # at construction before scene_id was known, so the store was not
+            # wired then. Register now if not already present.
+            if "query_scene_memory" not in self.services.tools.names():
+                from .tools import QuerySceneMemoryTool
+
+                self.services.tools.register(
+                    QuerySceneMemoryTool(
+                        self.services.scene_memory_store, self.services.planner
+                    )
+                )
+        else:
+            self.services.scene_memory_store = None
+
         recorder.append(
             make_event(
                 episode_id=request.episode_id,
@@ -175,7 +199,9 @@ class RuntimeEntrypoint:
         finally:
             # Clear recorder so the services object is reusable across episodes
             # even when graph.invoke raises (partial log left to caller).
+            # scene_memory_store is per-scene; clear so next episode gets fresh.
             self.services.recorder = None
+            self.services.scene_memory_store = None
 
         return EpisodeResult(
             schema_version=state.schema_version,
