@@ -109,3 +109,106 @@ def parse_frontier_response(response: str, valid_frontier_ids: list[str]) -> Opt
     if match and match.group(1) in valid_frontier_ids:
         return match.group(1)
     return valid_frontier_ids[0]
+
+
+class AEQAVisualStateBuilder:
+    """Build AEQA visual state from a duck-typed runtime environment."""
+
+    def build(self, episode: Any, env: Any) -> AEQAVisualState:
+        if env is not None and hasattr(env, "get_aeqa_visual_state"):
+            return AEQAVisualState.model_validate(env.get_aeqa_visual_state(episode))
+
+        question = str(getattr(episode, "prompt", "") or "")
+        step = int(getattr(episode, "step_index", 0) or 0)
+        return AEQAVisualState(
+            question=question,
+            current_step=step,
+            snapshots=[],
+            frontiers=[],
+            egocentric_views=[],
+            memory_text="",
+            tool_feedback="",
+        )
+
+
+ANSWER_SYSTEM_PROMPT = """Task: You are an indoor agent that needs to determine if the current collected visual information is sufficient to answer the question.
+
+Instructions:
+1. Carefully analyze the question's required object, attribute, relationship, or state.
+2. Carefully inspect all available snapshots.
+3. If any snapshot contains enough visual evidence, output Answer.
+4. If the evidence is insufficient, output Continue Exploration.
+"""
+
+
+EXPLORE_SYSTEM_PROMPT = """Task: You are an indoor agent that needs to PHYSICALLY NAVIGATE through sequential frontier selections to find information needed for answering the question.
+
+Instructions:
+1. Use common room-object relationships to infer where the needed evidence may be.
+2. Use previous visual clues and the high-level plan to avoid repeated irrelevant areas.
+3. Choose exactly one available frontier when exploration is needed.
+4. Keep selecting frontiers until visual evidence is sufficient to answer.
+"""
+
+
+def build_answer_messages(state: AEQAVisualState) -> list[dict]:
+    pairs: list[tuple[str, Optional[str]]] = [
+        (f"Question: {state.question}\n", None),
+    ]
+    if state.memory_text:
+        pairs.append((state.memory_text + "\n", None))
+    pairs.append(("Available Snapshots:\n", None))
+    snapshots = [snapshot for snapshot in state.snapshots if snapshot.image_b64]
+    if not snapshots:
+        pairs.append(("No snapshots available\n", None))
+    for idx, snapshot in enumerate(snapshots):
+        label = snapshot.label or f"Snapshot {idx}"
+        pairs.append((f"{label}: ", snapshot.image_b64))
+        pairs.append(("\n", None))
+    pairs.append((
+        'Output Format:\n'
+        'If answerable: "Answer: [concise answer] (Evidence: Snapshot [index])"\n'
+        'If not answerable: "Continue Exploration"',
+        None,
+    ))
+    return [
+        {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
+        {"role": "user", "content": build_content(pairs)},
+    ]
+
+
+def build_explore_messages(state: AEQAVisualState) -> list[dict]:
+    pairs: list[tuple[str, Optional[str]]] = [
+        (f"Target Question: {state.question}\n", None),
+    ]
+    if state.memory_text:
+        pairs.append((state.memory_text + "\n", None))
+    if state.tool_feedback:
+        pairs.append(("Tool Feedback:\n" + state.tool_feedback + "\n", None))
+    pairs.append(("Previously Observed Clues:\n", None))
+    snapshots = [snapshot for snapshot in state.snapshots if snapshot.image_b64]
+    for idx, snapshot in enumerate(snapshots):
+        label = snapshot.label or f"Snapshot {idx}"
+        pairs.append((f"{label}: ", snapshot.image_b64))
+        pairs.append(("\n", None))
+    if not snapshots:
+        pairs.append(("No snapshots available\n", None))
+    pairs.append(("\nAvailable Exploration Directions:\n", None))
+    frontiers = [frontier for frontier in state.frontiers if frontier.image_b64]
+    if not frontiers:
+        pairs.append(("No frontiers available\n", None))
+    for frontier in frontiers:
+        label = frontier.label or f"Frontier {frontier.frontier_id}"
+        pairs.append((f"{label}: ", frontier.image_b64))
+        pairs.append(("\n", None))
+    valid = ", ".join(f.frontier_id for f in frontiers) or "none"
+    pairs.append((
+        "Output Format:\n"
+        "First explain briefly. Then provide exactly: \"Next Step: Frontier i\".\n"
+        f"Available Frontier ids: {valid}",
+        None,
+    ))
+    return [
+        {"role": "system", "content": EXPLORE_SYSTEM_PROMPT},
+        {"role": "user", "content": build_content(pairs)},
+    ]
