@@ -30,6 +30,7 @@ from .contracts import (
     EpisodeState,
     PlannerDecision,
     RunSpec,
+    TaskMode,
     ToolCall,
     ToolResult,
 )
@@ -97,6 +98,9 @@ class RuntimeServices:
     # Phase 2: cross-episode scene memory store for model-driven recall.
     # None on the fake/dev path; wired by the entrypoint for real episodes.
     scene_memory_store: Any = None
+    # AEQA-only predictive controller. When set, question_answering episodes
+    # use it instead of the legacy one-call JSON planner path.
+    aeqa_controller: object | None = None
     # ponytail: `subtask_started` (design-spec event 11) is GOATBench-only and
     # emitted by the runner at subtask boundaries, not by a graph node — the
     # graph has no subtask concept. Add a runner-side emit if GOATBench needs
@@ -281,7 +285,19 @@ def plan_node(
     })
     rule = getattr(services, "rule", None)
     retries = getattr(rule, "planner_retries", 0) if rule is not None else 0
-    raw = services.planner.decide(prompt, retries=retries)
+    if (
+        episode.task_mode is TaskMode.QUESTION_ANSWERING
+        and services.aeqa_controller is not None
+    ):
+        raw = services.aeqa_controller.decide(
+            episode=episode,
+            context_text=prompt,
+            env=services.environment,
+            planner=services.planner,
+            prompt_audit=services.prompt_audit,
+        )
+    else:
+        raw = services.planner.decide(prompt, retries=retries)
     decision = (
         raw
         if isinstance(raw, PlannerDecision)

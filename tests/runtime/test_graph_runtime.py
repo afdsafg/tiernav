@@ -1140,3 +1140,73 @@ def test_finalize_node_invokes_sediment_on_legacy_path():
     assert len(store.room_updates) >= 1, "sediment must run on legacy path"
     assert len(store.notes) >= 1
 
+
+# ── Task 7: AEQA controller routing ──────────────────────────────────────
+
+
+class FakeAEQAController:
+    def __init__(self, decision: PlannerDecision) -> None:
+        self.decision = decision
+        self.calls = []
+
+    def decide(self, *, episode, context_text, env, planner, prompt_audit=None):
+        self.calls.append(
+            {
+                "episode_id": episode.episode_id,
+                "context_text": context_text,
+                "env": env,
+                "planner": planner,
+                "prompt_audit": prompt_audit,
+            }
+        )
+        return self.decision
+
+
+def test_graph_uses_aeqa_controller_for_question_answering():
+    planner = FakePlanner([PlannerDecision(action_type="submit_answer", arguments={"answer": "wrong"})])
+    controller = FakeAEQAController(
+        PlannerDecision(action_type="submit_answer", arguments={"answer": "controller answer"})
+    )
+    services = RuntimeServices(
+        planner=planner,
+        tools=with_stable_defaults(),
+        memory=MemoryService(enabled=True),
+        policy=WorkflowPolicy(),
+        aeqa_controller=controller,
+    )
+
+    final_state = _run(services, _spec(), _request())
+
+    assert final_state["state"]["answer"] == "controller answer"
+    assert len(controller.calls) == 1
+    assert planner.prompts == []
+
+
+def test_graph_keeps_text_planner_for_goal_navigation():
+    request = EpisodeRequest(
+        episode_id="ep-goat",
+        scene_id="scene-1",
+        task_name="goatbench",
+        task_mode="goal_navigation",
+        prompt="Navigate to refrigerator",
+    )
+    planner = FakePlanner(
+        [PlannerDecision(action_type="submit_answer", arguments={})]
+    )
+    controller = FakeAEQAController(
+        PlannerDecision(action_type="submit_answer", arguments={"answer": "unused"})
+    )
+    services = RuntimeServices(
+        planner=planner,
+        tools=with_stable_defaults(),
+        memory=MemoryService(enabled=True),
+        policy=WorkflowPolicy(),
+        aeqa_controller=controller,
+    )
+
+    final_state = _run(services, _spec(), request)
+
+    assert len(controller.calls) == 0
+    assert len(planner.prompts) == 1
+    assert final_state["state"]["task_mode"] == "goal_navigation"
+
