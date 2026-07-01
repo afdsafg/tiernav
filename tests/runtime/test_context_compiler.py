@@ -650,3 +650,326 @@ def test_task_state_omits_compact_summary_when_empty():
 
     assert "compact_summary:" not in task_state.content
 
+
+# --- Phase 3: rule-based phase detection -----------------------------------
+
+
+def test_extract_goal_keyword_navigate_to_format():
+    assert (
+        ContextCompiler._extract_goal_keyword("Navigate to refrigerator")
+        == "refrigerator"
+    )
+
+
+def test_extract_goal_keyword_empty_prompt():
+    assert ContextCompiler._extract_goal_keyword("") == ""
+
+
+def test_extract_goal_keyword_non_navigate_format_returns_empty():
+    # "Find the bed" does not match the "navigate to <x>" template.
+    assert ContextCompiler._extract_goal_keyword("Find the bed") == ""
+
+
+def test_extract_goal_keyword_strips_trailing_punctuation():
+    assert (
+        ContextCompiler._extract_goal_keyword("Navigate to the sofa. Then wait.")
+        == "the sofa"
+    )
+
+
+def test_detect_phase_submit_when_budget_almost_exhausted():
+    state = _base_state(round_index=9, prompt="Navigate to refrigerator")
+    assert ContextCompiler._detect_phase(state, env=None, max_rounds=10) == "submit"
+
+
+def test_detect_phase_navigate_when_goal_object_in_observation():
+    state = _base_state(
+        round_index=1,
+        prompt="Navigate to refrigerator",
+        last_observation=Observation(object_ids=["chair", "refrigerator"]),
+    )
+    assert ContextCompiler._detect_phase(state, env=None) == "navigate"
+
+
+def test_detect_phase_explore_when_goal_not_visible():
+    state = _base_state(
+        round_index=1,
+        prompt="Navigate to refrigerator",
+        last_observation=Observation(object_ids=["chair"]),
+    )
+    assert ContextCompiler._detect_phase(state, env=None) == "explore"
+
+
+def test_detect_phase_submit_after_arrived_outcome():
+    state = _base_state(
+        round_index=3,
+        prompt="Navigate to refrigerator",
+        current_decision={"action_type": "navigate_to_object"},
+        last_observation=Observation(
+            object_ids=["refrigerator"],
+            raw={"outcome": "arrived"},
+        ),
+    )
+    assert ContextCompiler._detect_phase(state, env=None) == "submit"
+
+
+def test_detect_phase_navigate_takes_priority_over_explore_but_not_submit():
+    # Goal visible but budget also almost exhausted -> submit wins.
+    state = _base_state(
+        round_index=9,
+        prompt="Navigate to refrigerator",
+        last_observation=Observation(object_ids=["refrigerator"]),
+    )
+    assert ContextCompiler._detect_phase(state, env=None, max_rounds=10) == "submit"
+
+
+class _SceneWithRefrigerator:
+    class _Scene:
+        objects = {
+            "o1": {"class_name": "chair"},
+            "o2": {"class_name": "Refrigerator"},
+        }
+
+    scene = _Scene()
+
+
+def test_detect_phase_navigate_when_goal_visible_in_env_scene_objects():
+    state = _base_state(
+        round_index=1,
+        prompt="Navigate to refrigerator",
+        last_observation=Observation(object_ids=["chair"]),
+    )
+    # object_ids has no refrigerator, but env.scene.objects does.
+    assert ContextCompiler._detect_phase(state, env=_SceneWithRefrigerator()) == "navigate"
+
+
+def test_render_task_instruction_explore_phase_contains_explore_marker():
+    state = _base_state(prompt="Navigate to refrigerator")
+    content = ContextCompiler._render_task_instruction(state, phase="explore")
+    assert "探索" in content
+    assert "导航" not in content
+    assert "提交" not in content
+
+
+def test_render_task_instruction_navigate_phase_contains_navigate_marker():
+    state = _base_state(prompt="Navigate to refrigerator")
+    content = ContextCompiler._render_task_instruction(state, phase="navigate")
+    assert "导航" in content
+    assert "探索" not in content
+
+
+def test_render_task_instruction_submit_phase_contains_submit_marker():
+    state = _base_state(prompt="Navigate to refrigerator")
+    content = ContextCompiler._render_task_instruction(state, phase="submit")
+    assert "提交" in content
+
+
+def test_render_task_instruction_unknown_phase_omits_strategy_block():
+    """Unknown phase -> strategy_for_phase returns "" -> no marker, skeleton remains."""
+    state = _base_state(prompt="Navigate to refrigerator")
+    content = ContextCompiler._render_task_instruction(state, phase="bogus")
+    assert "探索" not in content
+    assert "导航" not in content
+    assert "提交" not in content
+    # Skeleton still present.
+    assert "You are a navigation planner" in content
+
+
+def test_compile_wires_phase_into_task_instruction_for_navigate():
+    """End-to-end: goal visible in observation -> task_instruction carries navigate marker."""
+    state = _base_state(
+        round_index=1,
+        prompt="Navigate to refrigerator",
+        last_observation=Observation(object_ids=["refrigerator"]),
+    )
+    compiler = ContextCompiler()
+    sections = compiler.compile(state, action_schema=SCHEMA)
+    task = {s.name: s for s in sections}["task_instruction"]
+    assert "导航" in task.content
+    assert "探索" not in task.content
+
+
+def test_compile_defaults_to_explore_phase_for_non_navigate_prompt():
+    """AEQA 'Where is the lamp?' prompt -> _extract_goal_keyword returns "" -> explore."""
+    state = _base_state(prompt="Where is the lamp?")
+    compiler = ContextCompiler()
+    sections = compiler.compile(state, action_schema=SCHEMA)
+    task = {s.name: s for s in sections}["task_instruction"]
+    assert "探索" in task.content
+
+
+# --- Phase 3: compact state re-injection verification ---------------------
+#
+# ContextCompiler.compile() is stateless — every section is rebuilt from the
+# EpisodeState + env passed in. These tests verify that after a compact
+# trigger (compact_summary set), all dynamic sections still reflect CURRENT
+# live state, not stale pre-compact data.
+
+
+class _Frontier:
+    def __init__(self, frontier_id: str) -> None:
+        self.frontier_id = frontier_id
+
+
+class _TsdfMutable:
+    """Tsdf double whose frontiers list can be mutated between compiles."""
+
+    def __init__(self, frontiers: list | None = None, seeds: list | None = None) -> None:
+        self.frontiers = frontiers if frontiers is not None else []
+        self.seeds = seeds if seeds is not None else []
+        self.room_regions = []
+
+
+class _EnvMutable:
+    """Env double wrapping a mutable tsdf_planner + scene_graph_memory."""
+
+    def __init__(self, tsdf: _TsdfMutable, scene_graph=None) -> None:
+        self.tsdf_planner = tsdf
+        self.scene_graph_memory = scene_graph
+
+        class _Scene:
+            objects: dict = {}
+
+        self.scene = _Scene()
+
+
+def test_available_targets_re_rendered_from_env_post_compact():
+    """Post-compact, available_targets must reflect current env frontiers."""
+    tsdf = _TsdfMutable(frontiers=[_Frontier("f1"), _Frontier("f2")])
+    env = _EnvMutable(tsdf=tsdf)
+    state = _base_state(
+        compact_summary="Rooms 0,1 visited. Fridge not found.",
+        round_index=6,
+    )
+    compiler = ContextCompiler()
+
+    sections_a = compiler.compile(state, action_schema=SCHEMA, env=env)
+    targets_a = {s.name: s for s in sections_a}["available_targets"]
+    assert "f1" in targets_a.content
+    assert "f2" in targets_a.content
+
+    # Mutate env: drop f2, add f3 — recompile must see the new set.
+    tsdf.frontiers = [_Frontier("f1"), _Frontier("f3")]
+    sections_b = compiler.compile(state, action_schema=SCHEMA, env=env)
+    targets_b = {s.name: s for s in sections_b}["available_targets"]
+    assert "f3" in targets_b.content
+    assert "f2" not in targets_b.content
+
+
+def test_tool_feedback_based_on_current_state_post_compact():
+    """Post-compact, tool_feedback must reflect current last_observation."""
+    state = _base_state(
+        compact_summary="Rooms 0,1 visited. Fridge not found.",
+        round_index=6,
+        last_observation=Observation(
+            summary="Navigation to frontier 7 failed",
+            raw={
+                "outcome": "target_not_reached",
+                "subgoal": "Navigate to frontier 7",
+                "progress": "No valid path",
+            },
+        ),
+    )
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema=SCHEMA)
+    feedback = {s.name: s for s in sections}["tool_feedback"]
+
+    assert "target_not_reached" in feedback.content
+    assert "Navigate to frontier 7" in feedback.content
+
+
+def test_current_observation_based_on_current_state_post_compact():
+    """Post-compact, current_observation must reflect current last_observation."""
+    state = _base_state(
+        compact_summary="Rooms 0,1 visited. Fridge not found.",
+        round_index=6,
+        last_observation=Observation(
+            summary="Fridge visible near the counter.",
+            object_ids=["fridge", "counter"],
+            room_id="kitchen",
+        ),
+    )
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema=SCHEMA)
+    obs = {s.name: s for s in sections}["current_observation"]
+
+    assert "Fridge visible near the counter." in obs.content
+    assert "fridge" in obs.content
+    assert "room_id: kitchen" in obs.content
+
+
+def test_scene_graph_memory_uses_manifest_and_recalled_post_compact():
+    """Post-compact, scene_graph_memory must contain BOTH manifest and recalled_memory."""
+
+    class _SceneGraph:
+        def get_manifest(self):
+            return "rooms: 3(partially_explored)\nobjects: fridge x1, sofa x1"
+
+    env = _EnvMutable(tsdf=_TsdfMutable(), scene_graph=_SceneGraph())
+    state = _base_state(
+        compact_summary="Rooms 0,1 visited. Fridge not found.",
+        round_index=6,
+        recalled_memory="room 1: fridge found near counter",
+    )
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema=SCHEMA, env=env)
+    scene = {s.name: s for s in sections}["scene_graph_memory"]
+
+    assert "3(partially_explored)" in scene.content
+    assert "fridge x1" in scene.content
+    assert "recalled_details:" in scene.content
+    assert "room 1: fridge found near counter" in scene.content
+
+
+def test_full_compile_post_compact_is_consistent():
+    """Integration: at round 6 with compact set, every dynamic section reflects current state."""
+    tsdf = _TsdfMutable(frontiers=[_Frontier("f9")])
+
+    class _SceneGraph:
+        def get_manifest(self):
+            return "rooms: 2(partially_explored)\nobjects: fridge x1"
+
+    env = _EnvMutable(tsdf=tsdf, scene_graph=_SceneGraph())
+    state = _base_state(
+        compact_summary="Rooms 0,1 visited. Fridge not found.",
+        recalled_memory="room 1: fridge found",
+        round_index=6,
+        step_index=6,
+        last_observation=Observation(
+            summary="Fridge spotted near counter.",
+            object_ids=["fridge"],
+            room_id="kitchen",
+            raw={
+                "outcome": "target_not_reached",
+                "subgoal": "Navigate to frontier 9",
+                "progress": "blocked",
+            },
+        ),
+    )
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema=SCHEMA, env=env)
+    by_name = {s.name: s for s in sections}
+
+    # task_state carries compact_summary.
+    assert "compact_summary:" in by_name["task_state"].content
+    assert "Rooms 0,1 visited. Fridge not found." in by_name["task_state"].content
+
+    # scene_graph_memory carries both manifest and recalled.
+    assert "2(partially_explored)" in by_name["scene_graph_memory"].content
+    assert "room 1: fridge found" in by_name["scene_graph_memory"].content
+
+    # available_targets from current env.
+    assert "f9" in by_name["available_targets"].content
+
+    # tool_feedback from current observation.
+    assert "target_not_reached" in by_name["tool_feedback"].content
+    assert "Navigate to frontier 9" in by_name["tool_feedback"].content
+
+    # current_observation from current observation.
+    assert "Fridge spotted near counter." in by_name["current_observation"].content
+    assert "room_id: kitchen" in by_name["current_observation"].content
+

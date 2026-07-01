@@ -13,7 +13,7 @@ import hashlib
 from typing import Any
 
 from .contracts import ContextSection, EpisodeState
-from .prompts.task_instruction import STRATEGY_TEXT
+from .prompts.task_instruction import STRATEGY_SKELETON, strategy_for_phase
 
 
 def _hash(content: str) -> str:
@@ -109,7 +109,9 @@ class ContextCompiler:
                 f"policy_hint must be str, got {type(policy_hint).__name__}: "
                 f"{policy_hint!r}"
             )
-        task_instruction = self._render_task_instruction(state)
+        task_instruction = self._render_task_instruction(
+            state, self._detect_phase(state, env)
+        )
         memory_text = self._render_memory(state, include_memory)
         task_state = self._render_task_state(state)
         recent_trace = self._render_recent_trace(state)
@@ -142,7 +144,70 @@ class ContextCompiler:
         return render_prompt(sections)
 
     @staticmethod
-    def _render_task_instruction(state: EpisodeState) -> str:
+    def _detect_phase(state: EpisodeState, env: Any, max_rounds: int = 10) -> str:
+        """Rule-based phase detection: submit > navigate > explore.
+
+        Returns ``"explore"`` | ``"navigate"`` | ``"submit"``. Pure rules —
+        no LLM, no ``distance_to_goal`` (ground truth). ``max_rounds`` default
+        matches :class:`RunSpec.max_rounds`.
+        """
+        # 1. Submit: budget almost exhausted or just arrived at target.
+        if state.round_index >= max_rounds - 2:
+            return "submit"
+        decision = state.current_decision
+        if (
+            decision is not None
+            and decision.action_type == "navigate_to_object"
+            and "arrived" in str(state.last_observation.raw.get("outcome", ""))
+        ):
+            return "submit"
+        # 2. Navigate: goal object visible in current observation or targets.
+        if ContextCompiler._goal_object_visible(state, env):
+            return "navigate"
+        # 3. Default: explore.
+        return "explore"
+
+    @staticmethod
+    def _goal_object_visible(state: EpisodeState, env: Any) -> bool:
+        """Check if the goal object (from prompt) is visible in observation or targets."""
+        goal_keyword = ContextCompiler._extract_goal_keyword(state.prompt)
+        if not goal_keyword:
+            return False
+        objects_lower = [o.lower() for o in state.last_observation.object_ids]
+        if goal_keyword in objects_lower:
+            return True
+        if env is not None:
+            scene = getattr(env, "scene", None)
+            if scene is not None:
+                scene_objs = getattr(scene, "objects", None)
+                if scene_objs:
+                    for obj in scene_objs.values():
+                        if isinstance(obj, dict):
+                            cat = str(obj.get("class_name", "")).lower()
+                            if goal_keyword in cat:
+                                return True
+        return False
+
+    @staticmethod
+    def _extract_goal_keyword(prompt: str) -> str:
+        """Extract the goal object keyword from a prompt like 'Navigate to refrigerator'.
+
+        Returns lowercased keyword, or ``""`` if extraction fails (safe default
+        -> explore phase).
+        """
+        if not prompt:
+            return ""
+        lower = prompt.lower().strip()
+        if "navigate to " in lower:
+            after = lower.split("navigate to ", 1)[1].strip()
+            for sep in [",", ".", ";", "\n"]:
+                if sep in after:
+                    after = after.split(sep, 1)[0].strip()
+            return after
+        return ""
+
+    @staticmethod
+    def _render_task_instruction(state: EpisodeState, phase: str = "explore") -> str:
         lines = [
             f"episode_id: {state.episode_id}",
             f"scene_id: {state.scene_id}",
@@ -150,7 +215,9 @@ class ContextCompiler:
             f"task_mode: {state.task_mode.value}",
             f"prompt: {state.prompt}",
             "",
-            STRATEGY_TEXT,
+            STRATEGY_SKELETON,
+            "",
+            strategy_for_phase(phase),
         ]
         return "\n".join(lines)
 
@@ -175,8 +242,10 @@ class ContextCompiler:
         ]
         if state.failure_type:
             lines.append(f"last_failure_type: {state.failure_type}")
-        if state.distance_to_goal is not None:
-            lines.append(f"distance_to_goal_m: {state.distance_to_goal:.3f}")
+        # distance_to_goal is intentionally NOT rendered here — it is
+        # ground truth (computed from the GT goal_pose) and leaking it
+        # into the planner prompt is cheating. It stays on EpisodeState
+        # for SuccessEvaluator only.
         if state.compact_summary:
             lines.append("")
             lines.append("compact_summary:")
