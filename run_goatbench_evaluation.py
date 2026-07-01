@@ -666,24 +666,27 @@ def _run_goatbench_runtime(
                 else str(subtask_goal)
             )
 
-            # --- Extract goal pose for distance measurement ---
-            goal_positions = []
+            # --- Extract goal viewpoints for distance measurement ---
+            # GOATBench objects have multiple view_points; success is the
+            # shortest distance to ANY of them (MultiGoal). Collect all.
+            goal_viewpoints: list[dict[str, float]] = []
             if subtask_goal and isinstance(subtask_goal[0], dict):
                 for goal_obj in subtask_goal:
                     if "view_points" in goal_obj and goal_obj["view_points"]:
-                        goal_positions.append(
-                            goal_obj["view_points"][0]["agent_state"]["position"]
-                        )
+                        for vp in goal_obj["view_points"]:
+                            pos = vp["agent_state"]["position"]
+                            goal_viewpoints.append({
+                                "x": float(pos[0]),
+                                "z": float(pos[2]),
+                            })
                     elif "position" in goal_obj:
-                        goal_positions.append(goal_obj["position"])
+                        goal_viewpoints.append({
+                            "x": float(goal_obj["position"][0]),
+                            "z": float(goal_obj["position"][2]),
+                        })
 
-            if goal_positions:
-                gp = goal_positions[0]
-                # Habitat goal is [x, y, z] with y up; floor-plane goal is x, z.
-                env_service.set_goal_pose({
-                    "x": float(gp[0]),
-                    "z": float(gp[2]),
-                })
+            if goal_viewpoints:
+                env_service.set_goal_poses(goal_viewpoints)
 
             # --- Pose threading: each subtask starts from previous end pose ---
             current_pose = env_service.current_pose if env_service.current_pose else {

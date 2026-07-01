@@ -513,6 +513,7 @@ def _fake_env_with_distance(
         env._current_pose = dict(current_pose)
     if goal_pose is not None:
         env._goal_pose = dict(goal_pose)
+        env._goal_poses = [dict(goal_pose)]
     return env
 
 
