@@ -209,6 +209,37 @@ class ContextSection(RuntimeModel):
     content_hash: str = ""
 
 
+class TextContentBlock(RuntimeModel):
+    """OpenAI-compatible text block for multimodal planner messages."""
+
+    type: Literal["text"] = "text"
+    text: str
+
+
+class ImageURL(RuntimeModel):
+    """Image URL payload for OpenAI-compatible image_url blocks."""
+
+    url: str
+    detail: Optional[str] = None
+
+
+class ImageURLContentBlock(RuntimeModel):
+    """OpenAI-compatible image block for multimodal planner messages."""
+
+    type: Literal["image_url"] = "image_url"
+    image_url: ImageURL
+
+
+ContentBlock = Union[TextContentBlock, ImageURLContentBlock]
+
+
+class PlannerMessage(RuntimeModel):
+    """A chat message accepted by the planner transport."""
+
+    role: str
+    content: Union[str, list[ContentBlock]]
+
+
 class EpisodeState(RuntimeModel):
     """Materialized graph state. The event log remains the source of truth."""
 
@@ -283,6 +314,10 @@ PublicModel = Literal[
     "Observation",
     "MemoryPack",
     "ContextSection",
+    "TextContentBlock",
+    "ImageURL",
+    "ImageURLContentBlock",
+    "PlannerMessage",
     "GoalSpec",
     "BenchmarkRule",
 ]
@@ -298,6 +333,10 @@ PUBLIC_MODELS: dict[str, type[BaseModel]] = {
     "Observation": Observation,
     "MemoryPack": MemoryPack,
     "ContextSection": ContextSection,
+    "TextContentBlock": TextContentBlock,
+    "ImageURL": ImageURL,
+    "ImageURLContentBlock": ImageURLContentBlock,
+    "PlannerMessage": PlannerMessage,
     "GoalSpec": GoalSpec,
     "BenchmarkRule": BenchmarkRule,
 }

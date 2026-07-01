@@ -13,13 +13,17 @@ from src.tiernav_runtime.contracts import (
     EpisodeResult,
     EpisodeState,
     GoalSpec,
+    ImageURL,
+    ImageURLContentBlock,
     MemoryPack,
     MemoryScope,
     Observation,
+    PlannerMessage,
     PlannerDecision,
     PUBLIC_MODELS,
     PublicModel,
     RunSpec,
+    TextContentBlock,
     ToolCall,
     ToolResult,
     dump_runtime_json_schemas,
@@ -699,6 +703,51 @@ def test_context_section_rejects_string_token_estimate():
         raise AssertionError("ContextSection accepted string token_estimate")
 
 
+def test_multimodal_message_round_trips_text_and_image_blocks():
+    msg = PlannerMessage(
+        role="user",
+        content=[
+            TextContentBlock(text="Question: what is hanging on the oven handle?"),
+            ImageURLContentBlock(
+                image_url=ImageURL(
+                    url="data:image/png;base64,abc123",
+                    detail="high",
+                )
+            ),
+        ],
+    )
+
+    payload = msg.model_dump(mode="json")
+
+    assert payload["role"] == "user"
+    assert payload["content"][0] == {
+        "type": "text",
+        "text": "Question: what is hanging on the oven handle?",
+    }
+    assert payload["content"][1] == {
+        "type": "image_url",
+        "image_url": {
+            "url": "data:image/png;base64,abc123",
+            "detail": "high",
+        },
+    }
+    assert PlannerMessage.model_validate(payload).content[1].image_url.url.endswith("abc123")
+
+
+def test_planner_message_accepts_legacy_string_content():
+    msg = PlannerMessage(role="user", content="plain text prompt")
+    assert msg.model_dump(mode="json") == {
+        "role": "user",
+        "content": "plain text prompt",
+    }
+
+
+def test_image_url_rejects_non_string_url():
+    with pytest.raises(ValidationError) as exc:
+        ImageURL(url=123)
+    assert "url" in str(exc.value)
+
+
 def test_json_schema_dump_contains_all_public_models():
     schemas = dump_runtime_json_schemas()
 
@@ -713,6 +762,10 @@ def test_json_schema_dump_contains_all_public_models():
         "Observation",
         "MemoryPack",
         "ContextSection",
+        "TextContentBlock",
+        "ImageURL",
+        "ImageURLContentBlock",
+        "PlannerMessage",
         "GoalSpec",
         "BenchmarkRule",
     }
