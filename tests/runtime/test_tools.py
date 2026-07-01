@@ -162,13 +162,24 @@ def test_submit_answer_with_answer():
     assert "the chair" in result.observation.summary
 
 
-def test_submit_answer_missing_answer():
-    tool = SubmitAnswerTool()
+def test_submit_answer_missing_answer_qa_mode():
+    """In question_answering mode, missing answer is an error."""
+    tool = SubmitAnswerTool(task_mode="question_answering")
     call = ToolCall(call_id="c4", action_type="submit_answer", arguments={})
     result = tool.run(call)
     assert result.ok is False
     assert result.terminal is True
     assert "requires an answer" in result.error
+
+
+def test_submit_answer_no_answer_goal_navigation_ok():
+    """In goal_navigation mode, answer is optional (submit = arrival confirm)."""
+    tool = SubmitAnswerTool(task_mode="goal_navigation")
+    call = ToolCall(call_id="c4", action_type="submit_answer", arguments={})
+    result = tool.run(call)
+    assert result.ok is True
+    assert result.terminal is True
+    assert "goal reached" in result.observation.summary
 
 
 # ── NoopNavigationTool / defaults ─────────────────────────────────────────

@@ -87,6 +87,7 @@ class RuntimeEntrypoint:
         *,
         memory_scope_adapter: MemorySession | None = None,
         policy: WorkflowPolicy | None = None,
+        task_mode: str = "",
     ) -> "RuntimeEntrypoint":
         """Build an entrypoint backed by real production services.
 
@@ -96,7 +97,7 @@ class RuntimeEntrypoint:
         """
         services = RuntimeServices(
             planner=planner,
-            tools=build_real_tool_registry(executor),
+            tools=build_real_tool_registry(executor, task_mode=task_mode),
             memory=memory_scope_adapter if memory_scope_adapter is not None else MemoryService(),
             policy=policy if policy is not None else WorkflowPolicy(),
             environment=environment,

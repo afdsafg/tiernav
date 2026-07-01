@@ -32,28 +32,39 @@ class RuntimeTool(ABC):
 
 
 class SubmitAnswerTool(RuntimeTool):
-    """Terminal tool that records the planner's final answer."""
+    """Terminal tool that records the planner's final answer or arrival confirmation.
+
+    For ``question_answering`` mode: ``answer`` is required (the text answer).
+    For ``goal_navigation`` mode (GOATBench): ``answer`` is optional — submit
+    is a confirmation of physical arrival at the goal, not an answer. The
+    success evaluator checks ``distance_to_goal`` independently.
+    """
 
     name: ClassVar[str] = "submit_answer"
     terminal: ClassVar[bool] = True
-    arg_schema: ClassVar[str] = "required: answer (str)"
+    arg_schema: ClassVar[str] = "answer (str, required for QA; optional for goal_navigation)"
+
+    def __init__(self, task_mode: str = "") -> None:
+        self._task_mode = task_mode
 
     def run(self, call: ToolCall) -> ToolResult:
         answer = str(call.arguments.get("answer", "") or "")
-        if not answer:
+        is_qa = self._task_mode == "question_answering"
+        if is_qa and not answer:
             return ToolResult(
                 call_id=call.call_id,
                 action_type=call.action_type,
                 ok=False,
                 terminal=True,
-                error="submit_answer requires an answer",
+                error="submit_answer requires an answer for question_answering mode",
             )
+        summary = f"submitted answer: {answer}" if answer else "submitted: goal reached"
         return ToolResult(
             call_id=call.call_id,
             action_type=call.action_type,
             ok=True,
             terminal=True,
-            observation=Observation(summary=f"submitted answer: {answer}"),
+            observation=Observation(summary=summary),
         )
 
 
@@ -142,7 +153,7 @@ class ToolRegistry:
             tool = NoopNavigationTool()
             tool.name = action_type  # type: ignore[misc]
             registry.register(tool)
-        registry.register(SubmitAnswerTool())
+        registry.register(SubmitAnswerTool())  # task_mode="" → answer optional
         return registry
 
 
@@ -415,6 +426,7 @@ def build_real_tool_registry(
     executor: _ExecutorLike,
     scene_memory_store: Any = None,
     planner_client: Any = None,
+    task_mode: str = "",
 ) -> ToolRegistry:
     """Return a production :class:`ToolRegistry` backed by ``executor``.
 
@@ -434,7 +446,7 @@ def build_real_tool_registry(
     registry.register(NavigateToObjectTool(executor))
     registry.register(ExploreSeedTool(executor))
     registry.register(ExploreFrontierTool(executor))
-    registry.register(SubmitAnswerTool())
+    registry.register(SubmitAnswerTool(task_mode=task_mode))
     if scene_memory_store is not None and planner_client is not None:
         registry.register(QuerySceneMemoryTool(scene_memory_store, planner_client))
     return registry

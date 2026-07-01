@@ -643,6 +643,7 @@ def _run_goatbench_runtime(
         rule=rule,
         executor=executor,
         memory_scope_adapter=memory_session,
+        task_mode="goal_navigation",
     )
 
     # --- Adapter for episode-level session ---
