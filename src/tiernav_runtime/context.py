@@ -175,8 +175,8 @@ class ContextCompiler:
         ]
         if state.failure_type:
             lines.append(f"last_failure_type: {state.failure_type}")
-        if state.distance_to_goal is not None:
-            lines.append(f"distance_to_goal_m: {state.distance_to_goal:.3f}")
+        # distance_to_goal intentionally NOT rendered — ground truth leakage.
+        # Kept on EpisodeState for SuccessEvaluator only.
         if state.compact_summary:
             lines.append("")
             lines.append("compact_summary:")
