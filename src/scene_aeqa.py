@@ -984,7 +984,7 @@ def _load_gd_model(gd_dir=None, device="cuda"):
     return _gd_model, _gd_transform
 
 
-def gd_quality_filter(bbox, score, image_shape, max_bbox_ratio=None, min_score=0.35):
+def gd_quality_filter(bbox, score, image_shape, max_bbox_ratio=None, min_score=0.10):
     """Filter GD detections by confidence.
 
     Large boxes are allowed: when the agent is already close to the target,
