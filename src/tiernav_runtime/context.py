@@ -109,11 +109,12 @@ class ContextCompiler:
                 f"policy_hint must be str, got {type(policy_hint).__name__}: "
                 f"{policy_hint!r}"
             )
+        phase = self._detect_phase(state, env)
         task_instruction = self._render_task_instruction(
-            state, self._detect_phase(state, env)
+            state, phase
         )
         memory_text = self._render_memory(state, include_memory)
-        task_state = self._render_task_state(state)
+        task_state = self._render_task_state(state, phase)
         recent_trace = self._render_recent_trace(state)
         observation_text = self._render_observation(state)
         scene_graph_text = self._render_scene_graph_memory(state, env, include_memory)
@@ -240,7 +241,7 @@ class ContextCompiler:
         return _format_memory_pack(pack)
 
     @staticmethod
-    def _render_task_state(state: EpisodeState) -> str:
+    def _render_task_state(state: EpisodeState, phase: str = "explore") -> str:
         lines = [
             "continuous_context: enabled",
             f"task_mode: {state.task_mode.value}",
@@ -255,7 +256,11 @@ class ContextCompiler:
         # ground truth (computed from the GT goal_pose) and leaking it
         # into the planner prompt is cheating. It stays on EpisodeState
         # for SuccessEvaluator only.
-        if state.compact_summary:
+        # Skip compact_summary in submit phase: it was frozen at round 5
+        # and is likely stale (e.g. says "objects found: none" after we
+        # already found and navigated to the goal). The submit strategy
+        # block in task_instruction already tells the planner to submit.
+        if state.compact_summary and phase != "submit":
             lines.append("")
             lines.append("compact_summary:")
             lines.append(state.compact_summary)
