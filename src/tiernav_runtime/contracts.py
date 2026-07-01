@@ -204,6 +204,7 @@ class ContextSection(RuntimeModel):
     name: str
     content: str
     cacheable: bool
+    cache_break: bool = False
     token_estimate: NonNegativeInt = 0
     content_hash: str = ""
 

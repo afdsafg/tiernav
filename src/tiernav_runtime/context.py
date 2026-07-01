@@ -13,6 +13,7 @@ import hashlib
 from typing import Any
 
 from .contracts import ContextSection, EpisodeState
+from .prompts.task_instruction import STRATEGY_TEXT
 
 
 def _hash(content: str) -> str:
@@ -36,11 +37,12 @@ def _estimate_tokens(content: str) -> int:
     return max(1, len(content.split()))
 
 
-def _section(name: str, content: str, cacheable: bool) -> ContextSection:
+def _section(name: str, content: str, cacheable: bool, cache_break: bool = False) -> ContextSection:
     return ContextSection(
         name=name,
         content=content,
         cacheable=cacheable,
+        cache_break=cache_break,
         token_estimate=_estimate_tokens(content),
         content_hash=_hash(content),
     )
@@ -121,7 +123,7 @@ class ContextCompiler:
             _section("task_instruction", task_instruction, cacheable=True),
             _section("action_schema", action_schema, cacheable=True),
             _section("memory_index", memory_text, cacheable=True),
-            _section("task_state", task_state, cacheable=False),
+            _section("task_state", task_state, cacheable=False, cache_break=True),
             _section("recent_trace", recent_trace, cacheable=False),
             _section("current_observation", observation_text, cacheable=False),
             _section("scene_graph_memory", scene_graph_text, cacheable=False),
@@ -148,17 +150,7 @@ class ContextCompiler:
             f"task_mode: {state.task_mode.value}",
             f"prompt: {state.prompt}",
             "",
-            "You are a navigation planner. Output ONLY a JSON object on a single line, no markdown fences, no prose.",
-            "Required fields: action_type (one of the available tools), reason (string), expected (string).",
-            "Optional fields: object_name (str), seed_id (str), frontier_id (str), view_idx (int), answer (str, required for submit_answer).",
-            "Pick frontier_id / seed_id / object_name from the available_targets section below. Do NOT invent ids.",
-            "Do not call explore_frontier when frontiers is none or absent.",
-            "Do not call explore_seed when seeds is none or absent.",
-            "Do not call navigate_to_object when objects is none or absent.",
-            "Strategy: explore_panorama to observe -> explore_frontier/explore_seed to move -> navigate_to_object once target visible -> submit_answer when done.",
-            'Example: {"action_type": "explore_panorama", "reason": "Need to observe surroundings", "expected": "Get room layout"}',
-            'For target tools, copy the exact frontier_id, seed_id, or object_name from available_targets.',
-            'Example: {"action_type": "submit_answer", "reason": "Final answer", "expected": "Done", "answer": "<your answer here>"}',
+            STRATEGY_TEXT,
         ]
         return "\n".join(lines)
 

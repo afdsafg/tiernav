@@ -25,7 +25,7 @@ from .events import make_event
 from .graph import RuntimeServices, build_runtime_graph
 from .memory import MemoryService, MemorySession
 from .policy import WorkflowPolicy
-from .recorder import EpisodeRecorder
+from .recorder import EpisodeRecorder, PromptAuditRecorder
 from .success import SuccessEvaluator
 from .tools import ToolRegistry, build_real_tool_registry
 
@@ -128,6 +128,8 @@ class RuntimeEntrypoint:
         recorder = EpisodeRecorder(event_log_path)
         self.services.recorder = recorder
         self.services.event_seq[0] = 2
+        if spec.output_dir:
+            self.services.prompt_audit = PromptAuditRecorder(spec.output_dir)
 
         recorder.append(
             make_event(

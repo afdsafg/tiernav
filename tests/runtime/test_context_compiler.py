@@ -70,6 +70,23 @@ def test_sections_ordered_cacheable_first():
     assert any(not s.cacheable for s in sections)
 
 
+def test_task_state_is_only_cache_break_section():
+    state = _state_with_memory()
+    compiler = ContextCompiler()
+
+    sections = compiler.compile(state, action_schema=SCHEMA)
+
+    cache_break_names = [s.name for s in sections if s.cache_break]
+    assert cache_break_names == ["task_state"]
+    # All cacheable sections keep cache_break=False.
+    assert all(not s.cache_break for s in sections if s.cacheable)
+
+
+def test_cache_break_field_defaults_false_on_model():
+    section = ContextSection(name="x", content="y", cacheable=True)
+    assert section.cache_break is False
+
+
 def test_required_section_names_present():
     state = _state_with_memory()
     compiler = ContextCompiler()

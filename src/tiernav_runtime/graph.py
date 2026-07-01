@@ -35,7 +35,7 @@ from .contracts import (
 from .events import make_event
 from .memory import MemoryService, MemorySession
 from .policy import PolicyDecision, WorkflowPolicy
-from .recorder import EpisodeRecorder
+from .recorder import EpisodeRecorder, PromptAuditRecorder
 from .success import SuccessEvaluator
 from .tools import ToolRegistry
 
@@ -90,6 +90,9 @@ class RuntimeServices:
     # EpisodeRecorder wired by the entrypoint so graph nodes can append
     # design-spec events. None on the fake/dev path and between episodes.
     recorder: EpisodeRecorder | None = None
+    # Per-round prompt-section audit recorder (full content). None on the
+    # fake/dev path and when output_dir is unset.
+    prompt_audit: PromptAuditRecorder | None = None
     # ponytail: `subtask_started` (design-spec event 11) is GOATBench-only and
     # emitted by the runner at subtask boundaries, not by a graph node — the
     # graph has no subtask concept. Add a runner-side emit if GOATBench needs
@@ -172,6 +175,10 @@ def compile_context_node(
         env=services.environment,
     )
     episode.context_sections = sections
+    if services.prompt_audit is not None:
+        services.prompt_audit.record(
+            episode.episode_id, episode.round_index, episode.step_index, sections
+        )
     rendered_prompt = services.context.render_prompt(sections)
     _emit(services, episode.episode_id, "context_compiled", {
         "sections": [s.model_dump(mode="json") for s in sections],
