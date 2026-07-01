@@ -154,17 +154,21 @@ class ContextCompiler:
         # 1. Submit: budget almost exhausted or just arrived at the GOAL object.
         if state.round_index >= max_rounds - 2:
             return "submit"
-        decision = state.current_decision
+        # Check the LAST executed action (in last_observation.raw), not
+        # current_decision — current_decision is the upcoming round's plan
+        # (already set by plan_node), not what was just executed.
+        raw = state.last_observation.raw or {}
+        last_action = str(raw.get("action_type", "")).lower()
+        last_outcome = str(raw.get("outcome", "")).lower()
         if (
-            decision is not None
-            and decision.action_type == "navigate_to_object"
-            and "arrived" in str(state.last_observation.raw.get("outcome", ""))
+            last_action == "navigate_to_object"
+            and "arrived" in last_outcome
         ):
             # Only enter submit if we navigated to the goal object itself,
-            # not just any object we happened to navigate toward.
-            nav_target = str(decision.arguments.get("object_name", "")).lower()
+            # not just any object. Check the progress text for the goal keyword.
+            progress = str(raw.get("progress", "")).lower()
             goal_kw = ContextCompiler._extract_goal_keyword(state.prompt)
-            if goal_kw and nav_target and goal_kw in nav_target:
+            if goal_kw and goal_kw in progress:
                 return "submit"
         # 2. Navigate: goal object visible in current observation or targets.
         if ContextCompiler._goal_object_visible(state, env):

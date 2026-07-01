@@ -11,7 +11,6 @@ from src.tiernav_runtime.contracts import (
     EpisodeState,
     MemoryPack,
     Observation,
-    PlannerDecision,
 )
 
 
@@ -702,38 +701,38 @@ def test_detect_phase_explore_when_goal_not_visible():
 
 
 def test_detect_phase_submit_after_arrived_at_goal_object():
+    # last_observation.raw carries the LAST executed action's result, not
+    # current_decision (which is the upcoming round's plan at compile time).
     state = _base_state(
         round_index=3,
         prompt="Navigate to refrigerator",
-        current_decision={"action_type": "navigate_to_object"},
         last_observation=Observation(
             object_ids=["refrigerator"],
-            raw={"outcome": "arrived"},
+            raw={
+                "action_type": "navigate_to_object",
+                "outcome": "arrived",
+                "progress": "Arrived near refrigerator",
+            },
         ),
-    )
-    # decision needs object_name matching goal to trigger submit
-    state.current_decision = PlannerDecision(
-        action_type="navigate_to_object",
-        arguments={"object_name": "refrigerator"},
     )
     assert ContextCompiler._detect_phase(state, env=None) == "submit"
 
 
 def test_detect_phase_no_submit_when_arrived_at_non_goal_object():
-    # Navigated to a non-goal object and arrived — should NOT enter submit.
+    # Navigated to a non-goal object and arrived — progress has no goal kw.
     state = _base_state(
         round_index=3,
         prompt="Navigate to refrigerator",
-        current_decision={"action_type": "navigate_to_object"},
         last_observation=Observation(
             object_ids=["chair"],
-            raw={"outcome": "arrived"},
+            raw={
+                "action_type": "navigate_to_object",
+                "outcome": "arrived",
+                "progress": "Arrived near chair",
+            },
         ),
     )
-    state.current_decision = PlannerDecision(
-        action_type="navigate_to_object",
-        arguments={"object_name": "chair"},
-    )
+    # chair visible but not goal -> neither submit nor navigate -> explore.
     assert ContextCompiler._detect_phase(state, env=None) == "explore"
 
 
