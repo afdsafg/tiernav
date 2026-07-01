@@ -45,23 +45,24 @@ def call_openai_api(sys_prompt, contents) -> Optional[str]:
     while retry_count < max_tries:
         try:
             completion = client.chat.completions.create(
-                model="gpt-4o",  # model = "deployment_name"
+                model=os.getenv("MODEL_NAME", "qwen3-vl-flash"),  # model = "deployment_name"
                 messages=message_text,
                 temperature=0.7,
                 max_tokens=4096,
                 top_p=0.95,
                 frequency_penalty=0,
                 presence_penalty=0,
+                stop=None,
             )
             return completion.choices[0].message.content
         except openai.RateLimitError as e:
-            print("Rate limit error, waiting for 60s")
-            time.sleep(30)
+            print("Rate limit error, waiting for 3s")
+            time.sleep(3)
             retry_count += 1
             continue
         except Exception as e:
             print("Error: ", e)
-            time.sleep(60)
+            time.sleep(3)
             retry_count += 1
             continue
 
