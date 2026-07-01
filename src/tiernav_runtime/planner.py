@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from .config import ProviderConfig
-from .contracts import PlannerDecision
+from .contracts import PlannerDecision, PlannerMessage
 
 # Fields collected into PlannerDecision.arguments when non-None on the
 # source action. Kept explicit so the adapter is stable across PlannerAction
@@ -71,6 +71,36 @@ def _call_vlm(messages: list[dict], **kwargs: Any) -> str:
     return call_vlm(messages, **kwargs)
 
 
+def _coerce_messages(prompt_or_messages: Any) -> list[dict]:
+    """Return OpenAI-compatible messages from text, dicts, or PlannerMessage models."""
+    if isinstance(prompt_or_messages, str):
+        return [{"role": "user", "content": prompt_or_messages}]
+
+    if isinstance(prompt_or_messages, PlannerMessage):
+        return [prompt_or_messages.model_dump(mode="json", exclude_none=True)]
+
+    if isinstance(prompt_or_messages, list):
+        messages: list[dict] = []
+        for item in prompt_or_messages:
+            if isinstance(item, PlannerMessage):
+                messages.append(item.model_dump(mode="json", exclude_none=True))
+            elif isinstance(item, dict):
+                # Preserve existing transport behavior: copy the message envelope
+                # while leaving nested multimodal content untouched.
+                messages.append(dict(item))
+            else:
+                raise TypeError(
+                    "planner messages must be dict or PlannerMessage, got "
+                    + type(item).__name__
+                )
+        return messages
+
+    raise TypeError(
+        "prompt must be str, PlannerMessage, or list of messages, got "
+        + type(prompt_or_messages).__name__
+    )
+
+
 class PlannerClient:
     """Provider-agnostic planner transport.
 
@@ -121,13 +151,13 @@ class PlannerClient:
             model_name=self.resolve_model(),
         )
 
-    def decide(self, prompt: str, *, retries: int = 0) -> PlannerDecision:
+    def decide(self, prompt: Any, *, retries: int = 0) -> PlannerDecision:
         """Call the VLM with the compiled prompt and return a PlannerDecision.
 
-        Builds a single user message from ``prompt``, calls the
-        OpenAI-compatible transport, parses the JSON response, and maps it
-        through ``planner_action_to_decision`` for legacy PlannerAction
-        compatibility.
+        Accepts a legacy string prompt, a ``PlannerMessage``, or a list of
+        OpenAI-compatible messages, calls the transport, parses the JSON
+        response, and maps it through ``planner_action_to_decision`` for
+        legacy PlannerAction compatibility.
 
         On JSON parse errors or missing ``action_type``, retries up to
         ``retries`` times before returning a terminal ``submit_answer``
@@ -137,7 +167,7 @@ class PlannerClient:
         """
         import json as _json
 
-        messages = [{"role": "user", "content": prompt}]
+        messages = _coerce_messages(prompt)
         last_error_decision: PlannerDecision | None = None
 
         for attempt in range(retries + 1):

@@ -90,3 +90,39 @@ def test_call_drives_openai_compatible_transport(monkeypatch):
     assert captured["model_name"] == "transport-model"
     assert captured["messages"] is messages
     assert "explore_panorama" in response
+
+
+def test_call_vlm_preserves_multimodal_content_list(monkeypatch):
+    captured: dict = {}
+
+    def fake_call_vlm(messages, **kwargs):
+        captured["messages"] = messages
+        return "ok"
+
+    cfg = ProviderConfig(
+        api_key_env="PLAN_API_KEY",
+        base_url_env="PLAN_BASE_URL",
+        model_env="PLAN_MODEL",
+    )
+    monkeypatch.setenv("PLAN_API_KEY", "sk-transport")
+    monkeypatch.setenv("PLAN_BASE_URL", "https://transport.example.com/v1")
+    monkeypatch.setenv("PLAN_MODEL", "transport-model")
+
+    import src.tiernav_runtime.planner as planner_mod
+    monkeypatch.setattr(planner_mod, "_call_vlm", fake_call_vlm)
+
+    client = PlannerClient(provider=cfg)
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            ],
+        }
+    ]
+
+    response = client.call_vlm(messages)
+
+    assert response == "ok"
+    assert captured["messages"] is messages

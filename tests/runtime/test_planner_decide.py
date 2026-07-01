@@ -102,3 +102,35 @@ class TestPlannerClientDecide:
         assert decision.action_type == "submit_answer"
         assert decision.confidence == 0.0
         assert "planner_response_not_dict" in decision.arguments.get("failure_reason", "")
+
+    def test_decide_accepts_multimodal_messages(self):
+        cfg = ProviderConfig(
+            api_key_env="TEST_KEY",
+            base_url_env="TEST_BASE_URL",
+            model_env="TEST_MODEL",
+        )
+        client = PlannerClient(cfg, api_key="sk-test", base_url="http://test", model="test-model")
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Choose an action."},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,abc"},
+                    },
+                ],
+            }
+        ]
+
+        with patch(
+            "src.tiernav_runtime.planner._call_vlm",
+            return_value='{"action_type": "submit_answer", "answer": "towel"}',
+        ) as mock_vlm:
+            decision = client.decide(messages)
+
+        sent_messages = mock_vlm.call_args[0][0]
+        assert sent_messages == messages
+        assert sent_messages[0]["content"][1]["image_url"]["url"].endswith("abc")
+        assert decision.action_type == "submit_answer"
+        assert decision.arguments["answer"] == "towel"
