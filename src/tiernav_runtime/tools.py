@@ -218,6 +218,9 @@ def _evidence_to_observation(evidence: Any) -> Observation:
             "subgoal": str(getattr(evidence, "subgoal", "") or ""),
             "progress": str(getattr(evidence, "progress", "") or ""),
             "salient": list(getattr(evidence, "salient", []) or []),
+            # ponytail: demo keeps the current image inline for the visual-state
+            # builder; move this to an image store if observations are retained.
+            "current_image_b64": str(getattr(evidence, "current_image_b64", "") or ""),
         },
     )
 
@@ -449,4 +452,16 @@ def build_real_tool_registry(
     registry.register(SubmitAnswerTool(task_mode=task_mode))
     if scene_memory_store is not None and planner_client is not None:
         registry.register(QuerySceneMemoryTool(scene_memory_store, planner_client))
+    return registry
+
+
+def build_aeqa_tool_registry(
+    executor: _ExecutorLike,
+    *,
+    task_mode: str = "question_answering",
+) -> ToolRegistry:
+    """Return the AEQA demo tool registry: frontier exploration plus answer submit."""
+    registry = ToolRegistry()
+    registry.register(ExploreFrontierTool(executor))
+    registry.register(SubmitAnswerTool(task_mode=task_mode))
     return registry

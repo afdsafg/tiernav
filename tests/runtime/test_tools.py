@@ -17,6 +17,7 @@ from src.tiernav_runtime.tools import (
     RuntimeTool,
     SubmitAnswerTool,
     ToolRegistry,
+    build_aeqa_tool_registry,
     build_real_tool_registry,
     register_query_scene_memory,
     with_stable_defaults,
@@ -761,3 +762,43 @@ def test_query_scene_memory_dispatched_via_registry():
     assert result.terminal is False
     assert "o_9" in result.observation.summary
     assert '"shape": "round"' in result.observation.summary
+
+
+# ── AEQA frontier-only tool registry ───────────────────────────────────────
+
+
+def test_build_aeqa_tool_registry_exposes_only_frontier_and_submit():
+    reg = build_aeqa_tool_registry(FakeExecutor(), task_mode="question_answering")
+    assert reg.names() == ["explore_frontier", "submit_answer"]
+    schema = reg.action_schema_text()
+    assert "explore_frontier" in schema
+    assert "submit_answer" in schema
+    assert "navigate_to_object" not in schema
+    assert "explore_seed" not in schema
+    assert "explore_panorama" not in schema
+
+
+def test_evidence_observation_preserves_current_image_base64():
+    evidence = TrajectoryEvidence(
+        subgoal="Explore frontier 4",
+        task_mode="explore_frontier",
+        progress="Arrived at frontier 4",
+        outcome="arrived_near_target",
+        current_image_b64="abc123",
+        key_frames=["frontier-step"],
+        room_id=2,
+        objects_nearby=["oven"],
+    )
+
+    class ImageExecutor(FakeExecutor):
+        def explore_frontier(self, frontier_id):
+            return evidence
+
+    reg = build_aeqa_tool_registry(ImageExecutor(), task_mode="question_answering")
+    result = reg.dispatch(
+        ToolCall(call_id="c-img", action_type="explore_frontier", arguments={"frontier_id": "4"})
+    )
+
+    assert result.ok is True
+    assert result.observation.image_ids == ["frontier-step"]
+    assert result.observation.raw["current_image_b64"] == "abc123"
