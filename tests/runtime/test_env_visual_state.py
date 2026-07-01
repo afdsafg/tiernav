@@ -24,6 +24,13 @@ class FakeScene:
     }
 
 
+class SnapshotImageScene(FakeScene):
+    snapshots = {"snapshot-key": FakeSnapshot()}
+    all_observations = {
+        "rgb-0": np.full((7, 5, 3), 80, dtype=np.uint8),
+    }
+
+
 class FakeFrontier:
     frontier_id = 7
     image = "frontier-7.png"
@@ -57,7 +64,7 @@ class PanoramaExecutor:
             "Evidence",
             (),
             {
-                "current_image_b64": "panorama-b64",
+                "current_image_b64": _image_b64(width=13, height=9, value=144),
                 "progress": "Panorama complete",
             },
         )()
@@ -90,7 +97,7 @@ def test_environment_builds_real_aeqa_visual_state_from_scene_and_tsdf():
         step_index=3,
         last_observation=Observation(
             summary="Arrived near the kitchen frontier.",
-            raw={"current_image_b64": "current-view-b64"},
+            raw={"current_image_b64": _image_b64(width=5, height=7, value=160)},
         ),
     )
 
@@ -104,8 +111,53 @@ def test_environment_builds_real_aeqa_visual_state_from_scene_and_tsdf():
     assert "towel" in state["snapshots"][0]["label"]
     assert state["frontiers"][0]["frontier_id"] == "7"
     assert state["frontiers"][0]["image_b64"]
-    assert state["egocentric_views"][0]["image_b64"] == "current-view-b64"
+    assert _decoded_size(state["egocentric_views"][0]["image_b64"]) == (360, 360)
     assert "Arrived near the kitchen frontier." in state["tool_feedback"]
+
+
+def test_environment_visual_state_uses_snapshot_image_observation_key():
+    env = RuntimeEnvironmentService.for_aeqa(
+        scene=SnapshotImageScene(),
+        tsdf_planner=FakeTSDF(),
+        executor=None,
+    )
+    episode = EpisodeState(
+        episode_id="ep-snapshot-image",
+        scene_id="scene-1",
+        task_name="aeqa",
+        task_mode="question_answering",
+        prompt="What is hanging on the oven handle?",
+    )
+
+    state = env.get_aeqa_visual_state(episode)
+
+    assert state["snapshots"][0]["image_id"] == "snapshot-key"
+    assert _decoded_size(state["snapshots"][0]["image_b64"]) == (360, 360)
+
+
+def test_environment_visual_state_skips_plain_string_image_ids():
+    class PlainStringScene(FakeScene):
+        snapshots = {"snapshot-key": type("Snapshot", (), {"image": "step0_view0", "cluster": []})()}
+        all_observations = {}
+
+    env = RuntimeEnvironmentService.for_aeqa(
+        scene=PlainStringScene(),
+        tsdf_planner=object(),
+        executor=None,
+    )
+    episode = EpisodeState(
+        episode_id="ep-plain-string",
+        scene_id="scene-1",
+        task_name="aeqa",
+        task_mode="question_answering",
+        prompt="What is hanging on the oven handle?",
+        last_observation=Observation(raw={"current_image_b64": "step0_view0"}),
+    )
+
+    state = env.get_aeqa_visual_state(episode)
+
+    assert state["snapshots"] == []
+    assert state["egocentric_views"] == []
 
 
 def test_environment_visual_state_resizes_uploaded_images_to_360_square():
@@ -158,4 +210,4 @@ def test_environment_initial_visual_context_seeds_frontier_map():
         )
     )
     assert state["frontiers"][0]["frontier_id"] == "7"
-    assert state["egocentric_views"][0]["image_b64"] == "panorama-b64"
+    assert _decoded_size(state["egocentric_views"][0]["image_b64"]) == (360, 360)

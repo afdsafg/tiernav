@@ -319,7 +319,7 @@ class RuntimeEnvironmentService:
                 with Image.open(io.BytesIO(base64.b64decode(image))) as img:
                     return RuntimeEnvironmentService._pil_image_to_b64(img)
             except Exception:
-                return image
+                return ""
         try:
             import numpy as np
             from PIL import Image
@@ -359,7 +359,10 @@ class RuntimeEnvironmentService:
         for idx, (snapshot_id, snapshot) in enumerate(items):
             image = observations.get(snapshot_id)
             if image is None:
-                image = getattr(snapshot, "image", None)
+                snapshot_image = getattr(snapshot, "image", None)
+                image = observations.get(snapshot_image)
+                if image is None:
+                    image = snapshot_image
             image_b64 = self._image_to_b64(image)
             if not image_b64:
                 continue
