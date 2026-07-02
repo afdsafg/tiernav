@@ -316,8 +316,11 @@ class AEQAPredictiveController:
             state.memory_text = (state.memory_text + "\n" + "\n".join(memory.step_summaries)).strip()
 
         answer_messages = build_answer_messages(state)
-        self._audit(prompt_audit, episode, "aeqa_answerer", answer_messages)
-        answer_raw = planner.call_vlm(answer_messages, max_tokens=1024, temperature=0.3)
+        answer_raw: Optional[str] = None
+        try:
+            answer_raw = planner.call_vlm(answer_messages, max_tokens=1024, temperature=0.3)
+        finally:
+            self._audit(prompt_audit, episode, "aeqa_answerer", answer_messages, response=answer_raw)
         parsed_answer = parse_answer_response(answer_raw)
         memory.last_answerer_decision = answer_raw or ""
 
@@ -344,8 +347,11 @@ class AEQAPredictiveController:
             )
 
         explore_messages = build_explore_messages(state)
-        self._audit(prompt_audit, episode, "aeqa_explorer", explore_messages)
-        explore_raw = planner.call_vlm(explore_messages, max_tokens=1024, temperature=0.3)
+        explore_raw: Optional[str] = None
+        try:
+            explore_raw = planner.call_vlm(explore_messages, max_tokens=1024, temperature=0.3)
+        finally:
+            self._audit(prompt_audit, episode, "aeqa_explorer", explore_messages, response=explore_raw)
         selected = parse_frontier_response(explore_raw, valid_frontier_ids)
         memory.last_explorer_decision = explore_raw or ""
 
@@ -357,7 +363,13 @@ class AEQAPredictiveController:
         )
 
     @staticmethod
-    def _audit(prompt_audit: Any, episode: Any, label: str, messages: list[dict]) -> None:
+    def _audit(
+        prompt_audit: Any,
+        episode: Any,
+        label: str,
+        messages: list[dict],
+        response: str | None = None,
+    ) -> None:
         if prompt_audit is None or not hasattr(prompt_audit, "record_multimodal"):
             return
         prompt_audit.record_multimodal(
@@ -366,4 +378,5 @@ class AEQAPredictiveController:
             step_index=int(getattr(episode, "step_index", 0) or 0),
             label=label,
             messages=messages,
+            response=response,
         )

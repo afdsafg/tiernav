@@ -100,6 +100,7 @@ class PromptAuditRecorder:
         step_index: int,
         label: str,
         messages: list[dict],
+        response: str | None = None,
     ) -> None:
         path = self.dir / f"{episode_id}.multimodal.jsonl"
         entry = {
@@ -108,5 +109,7 @@ class PromptAuditRecorder:
             "label": label,
             "messages": sanitize_multimodal_messages(messages),
         }
+        if response is not None:
+            entry["response"] = response
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")

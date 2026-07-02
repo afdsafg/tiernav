@@ -1,3 +1,5 @@
+import pytest
+
 from src.tiernav_runtime.aeqa_predictive import (
     AEQAFrontier,
     AEQAImage,
@@ -287,6 +289,11 @@ class ScriptedVLM:
         return self.responses.pop(0)
 
 
+class RaisingVLM:
+    def call_vlm(self, messages, **kwargs):
+        raise RuntimeError("vlm failed")
+
+
 class RecordingAudit:
     def __init__(self):
         self.calls = []
@@ -303,6 +310,23 @@ def _episode():
         task_mode="question_answering",
         prompt="What is hanging on the oven handle?",
     )
+
+
+def test_controller_audits_answerer_prompt_when_vlm_raises():
+    controller = AEQAPredictiveController()
+    audit = RecordingAudit()
+
+    with pytest.raises(RuntimeError):
+        controller.decide(
+            episode=_episode(),
+            context_text="compiled text",
+            env=FakeVisualEnv(),
+            planner=RaisingVLM(),
+            prompt_audit=audit,
+        )
+
+    assert audit.calls[0]["label"] == "aeqa_answerer"
+    assert audit.calls[0]["response"] is None
 
 
 def test_controller_submits_when_answerer_finds_answer():
@@ -324,6 +348,7 @@ def test_controller_submits_when_answerer_finds_answer():
     assert decision.arguments["evidence_snapshot"] == 0
     assert len(planner.messages) == 1
     assert audit.calls[0]["label"] == "aeqa_answerer"
+    assert audit.calls[0]["response"] == "Answer: a white towel (Evidence: Snapshot 0)"
 
 
 def test_controller_explores_frontier_when_answerer_says_continue():

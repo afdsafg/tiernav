@@ -56,3 +56,21 @@ def test_prompt_audit_records_multimodal_without_raw_base64(tmp_path):
     assert payload["step"] == 3
     assert "<omitted chars=64 sha256=" in url
     assert "bbbbbbbbbb" not in json.dumps(payload)
+
+
+def test_prompt_audit_records_multimodal_response(tmp_path):
+    recorder = PromptAuditRecorder(tmp_path)
+
+    recorder.record_multimodal(
+        episode_id="ep-1",
+        round_index=2,
+        step_index=3,
+        label="answerer",
+        messages=[{"role": "user", "content": "Question"}],
+        response="Continue Exploration",
+    )
+
+    path = tmp_path / "prompt_audit" / "ep-1.multimodal.jsonl"
+    payload = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+
+    assert payload["response"] == "Continue Exploration"
